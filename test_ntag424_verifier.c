@@ -280,7 +280,7 @@ static void test_cmac_null_args(void)
  * Expected values from tests/cryptoutils.test.js TEST_VECTORS[0]:
  *   sv2 = 3cc3000100800499 6c6a926980030000
  *   ks  = f25c4b5ce6ab3ff4 05f287afac4e4d1a
- *   cm  = 76e1e99ceecb401f a3ed6e887092 7cce
+ *   cm  = 76e1e99ceecb401fa3ed6e8870927cce
  *   ct  = e19ccb1fed8892ce
  */
 static void test_sv2_vector1(void)
@@ -327,7 +327,7 @@ static void test_sv2_vector1(void)
  * Expected values from tests/cryptoutils.test.js TEST_VECTORS[1]:
  *   sv2 = 3cc3000100800499 6c6a926980050000
  *   ks  = 4946276974187e98 60658bbd8210c8be
- *   cm  = 5e66f3b45d82026e c6a4f1c14355 70b4
+ *   cm  = 5e66f3b45d82026ec6a4f1c1435570b4
  *   ct  = 66b4826ea4c155b4
  */
 static void test_sv2_vector2(void)
@@ -373,7 +373,7 @@ static void test_sv2_vector2(void)
  * Expected values from tests/cryptoutils.test.js TEST_VECTORS[2]:
  *   sv2 = 3cc3000100800499 6c6a926980070000
  *   ks  = 61bdb1510f4fd905 665fa23ac0c72661
- *   cm  = 28ccca61576606 0c6502fa0bc74d4996
+ *   cm  = 28ccca6157660c6502fa0bc74d4996
  *   ct  = cc61660c020b4d96
  */
 static void test_sv2_vector3(void)
