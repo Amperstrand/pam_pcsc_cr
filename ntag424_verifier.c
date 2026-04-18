@@ -128,6 +128,9 @@ const char *ntag424_verify_status_string(ntag424_verify_status_t status)
 	case NTAG424_VERIFY_ERR_CRYPTO: return "crypto operation failed";
 	case NTAG424_VERIFY_ERR_PICC_TAG: return "invalid decrypted PICC data tag";
 	case NTAG424_VERIFY_ERR_CMAC_MISMATCH: return "cmac mismatch";
+	case NTAG424_VERIFY_ERR_NDEF_TOO_SHORT: return "NDEF message too short";
+	case NTAG424_VERIFY_ERR_NDEF_NOT_URL: return "NDEF record is not a URL";
+	case NTAG424_VERIFY_ERR_URL_TOO_LONG: return "URL exceeds maximum length";
 	default: return "unknown error";
 	}
 }
@@ -269,4 +272,208 @@ done:
 	memset(cm, 0, sizeof(cm));
 	memset(expected_c, 0, sizeof(expected_c));
 	return status;
+}
+
+ntag424_verify_status_t ntag424_cmac_compute(
+	const uint8_t key[NTAG424_KEY_BYTES],
+	const uint8_t *msg, size_t msg_len,
+	uint8_t mac[NTAG424_KEY_BYTES])
+{
+	const char *cname;
+
+	if (!key || !mac) return NTAG424_VERIFY_ERR_INVALID_ARGUMENT;
+	cname = crypto_init(0);
+	if (!cname) return NTAG424_VERIFY_ERR_CRYPTO;
+	return ntag424_cmac(key, msg, msg_len, mac) ?
+		NTAG424_VERIFY_ERR_CRYPTO : NTAG424_VERIFY_OK;
+}
+
+ntag424_verify_status_t ntag424_sv2_and_ct(
+	const uint8_t uid[NTAG424_UID_BYTES],
+	const uint8_t counter_be[NTAG424_COUNTER_BYTES],
+	const uint8_t k2[NTAG424_KEY_BYTES],
+	uint8_t sv2[NTAG424_KEY_BYTES],
+	uint8_t ks[NTAG424_KEY_BYTES],
+	uint8_t cm[NTAG424_KEY_BYTES],
+	uint8_t ct[NTAG424_CT_BYTES])
+{
+	size_t i;
+	const char *cname;
+
+	if (!uid || !counter_be || !k2 || !sv2 || !ks || !cm || !ct)
+		return NTAG424_VERIFY_ERR_INVALID_ARGUMENT;
+	cname = crypto_init(0);
+	if (!cname) return NTAG424_VERIFY_ERR_CRYPTO;
+
+	sv2[0]  = 0x3C; sv2[1]  = 0xC3; sv2[2]  = 0x00;
+	sv2[3]  = 0x01; sv2[4]  = 0x00; sv2[5]  = 0x80;
+	memcpy(sv2 + 6, uid, NTAG424_UID_BYTES);
+	/* counter_be[2] is LSB; SV2 places counter LSB at byte 13 */
+	sv2[13] = counter_be[2];
+	sv2[14] = counter_be[1];
+	sv2[15] = counter_be[0];
+
+	if (ntag424_cmac(k2, sv2, NTAG424_KEY_BYTES, ks)) return NTAG424_VERIFY_ERR_CRYPTO;
+	if (ntag424_cmac(ks, NULL, 0, cm)) return NTAG424_VERIFY_ERR_CRYPTO;
+	for (i = 0; i < NTAG424_CT_BYTES; i++) ct[i] = cm[1 + i * 2];
+	return NTAG424_VERIFY_OK;
+}
+
+/*
+ * NFC Forum URI Identifier Codes (subset used for BoltCard / NTAG424).
+ * Ref: NFC Forum URI Record Type Definition (RTD) 1.0, Section 3.2.2.
+ */
+static const char * const ntag424_uri_prefixes[] = {
+	"",              /* 0x00 – no prefix */
+	"http://www.",   /* 0x01 */
+	"https://www.",  /* 0x02 */
+	"http://",       /* 0x03 */
+	"https://",      /* 0x04 */
+	"tel:",          /* 0x05 */
+	"mailto:",       /* 0x06 */
+	"ftp://anonymous:anonymous@", /* 0x07 */
+	"ftp://ftp.",    /* 0x08 */
+	"ftps://",       /* 0x09 */
+	"sftp://",       /* 0x0A */
+	"smb://",        /* 0x0B */
+	"nfs://",        /* 0x0C */
+	"ftp://",        /* 0x0D */
+	"dav://",        /* 0x0E */
+	"news:",         /* 0x0F */
+	"telnet://",     /* 0x10 */
+	"imap:",         /* 0x11 */
+	"rtsp://",       /* 0x12 */
+	"urn:",          /* 0x13 */
+	"pop:",          /* 0x14 */
+	"sip:",          /* 0x15 */
+	"sips:",         /* 0x16 */
+	"tftp:",         /* 0x17 */
+	"btspp://",      /* 0x18 */
+	"btl2cap://",    /* 0x19 */
+	"btgoep://",     /* 0x1A */
+	"tcpobex://",    /* 0x1B */
+	"irdaobex://",   /* 0x1C */
+	"file://",       /* 0x1D */
+	"urn:epc:id:",   /* 0x1E */
+	"urn:epc:tag:",  /* 0x1F */
+	"urn:epc:pat:",  /* 0x20 */
+	"urn:epc:raw:",  /* 0x21 */
+	"urn:epc:",      /* 0x22 */
+	"urn:nfc:",      /* 0x23 */
+};
+
+#define NTAG424_URI_PREFIX_COUNT \
+	(sizeof(ntag424_uri_prefixes) / sizeof(ntag424_uri_prefixes[0]))
+
+ntag424_verify_status_t ntag424_extract_url_from_ndef(
+	const uint8_t *ndef, size_t ndef_len,
+	char *url, size_t url_size)
+{
+	uint8_t hdr, tnf, sr, il;
+	uint8_t type_len, id_len;
+	uint32_t payload_len;
+	size_t offset;
+	uint8_t prefix_code;
+	const char *prefix_str;
+	size_t prefix_slen, suffix_len, total_len;
+
+	if (!ndef || !url || url_size == 0)
+		return NTAG424_VERIFY_ERR_INVALID_ARGUMENT;
+
+	/* Need at least: header + type_len + payload_len(1 or 4) + type(1) + payload_prefix(1) */
+	if (ndef_len < 5) return NTAG424_VERIFY_ERR_NDEF_TOO_SHORT;
+
+	hdr      = ndef[0];
+	tnf      = (uint8_t)(hdr & 0x07);
+	sr       = (uint8_t)((hdr >> 4) & 0x01);
+	il       = (uint8_t)((hdr >> 3) & 0x01);
+	type_len = ndef[1];
+	offset   = 2;
+
+	/* Payload length: 1 byte when SR=1, 4 bytes (big-endian) when SR=0 */
+	if (sr) {
+		if (ndef_len < offset + 1) return NTAG424_VERIFY_ERR_NDEF_TOO_SHORT;
+		payload_len = ndef[offset++];
+	} else {
+		if (ndef_len < offset + 4) return NTAG424_VERIFY_ERR_NDEF_TOO_SHORT;
+		payload_len = ((uint32_t)ndef[offset]     << 24) |
+			      ((uint32_t)ndef[offset + 1] << 16) |
+			      ((uint32_t)ndef[offset + 2] <<  8) |
+			       (uint32_t)ndef[offset + 3];
+		offset += 4;
+	}
+
+	/* Optional ID Length field */
+	if (il) {
+		if (ndef_len < offset + 1) return NTAG424_VERIFY_ERR_NDEF_TOO_SHORT;
+		id_len = ndef[offset++];
+	} else {
+		id_len = 0;
+	}
+
+	/* Type bytes */
+	if (ndef_len < offset + type_len) return NTAG424_VERIFY_ERR_NDEF_TOO_SHORT;
+
+	/* Check: Well Known type (TNF=0x01), single-byte type, type byte = 'U' (0x55) */
+	if (tnf != 0x01 || type_len != 1 || ndef[offset] != 0x55)
+		return NTAG424_VERIFY_ERR_NDEF_NOT_URL;
+	offset += type_len;
+
+	/* Skip optional ID field */
+	if (id_len > 0) {
+		if (ndef_len < offset + id_len) return NTAG424_VERIFY_ERR_NDEF_TOO_SHORT;
+		offset += id_len;
+	}
+
+	/* Payload: at least 1 byte (the URI prefix code) */
+	if (ndef_len < offset + payload_len) return NTAG424_VERIFY_ERR_NDEF_TOO_SHORT;
+	if (payload_len < 1) return NTAG424_VERIFY_ERR_NDEF_NOT_URL;
+
+	prefix_code = ndef[offset];
+	if (prefix_code < (uint8_t)NTAG424_URI_PREFIX_COUNT)
+		prefix_str = ntag424_uri_prefixes[prefix_code];
+	else
+		prefix_str = "";
+
+	prefix_slen = strlen(prefix_str);
+	suffix_len  = payload_len - 1;
+	total_len   = prefix_slen + suffix_len;
+
+	if (total_len + 1 > url_size) return NTAG424_VERIFY_ERR_URL_TOO_LONG;
+
+	memcpy(url, prefix_str, prefix_slen);
+	memcpy(url + prefix_slen, ndef + offset + 1, suffix_len);
+	url[total_len] = '\0';
+	return NTAG424_VERIFY_OK;
+}
+
+ntag424_verify_status_t ntag424_verify_from_url(
+	const char *url,
+	const uint8_t k1[NTAG424_KEY_BYTES],
+	const uint8_t k2[NTAG424_KEY_BYTES],
+	struct ntag424_verify_result *out)
+{
+	char p_hex[NTAG424_P_HEX_LEN + 1];
+	char c_hex[NTAG424_C_HEX_LEN + 1];
+	ntag424_verify_status_t rc;
+
+	if (!url || !k1 || !k2 || !out) return NTAG424_VERIFY_ERR_INVALID_ARGUMENT;
+	rc = ntag424_extract_p_c(url, p_hex, sizeof(p_hex), c_hex, sizeof(c_hex));
+	if (rc != NTAG424_VERIFY_OK) return rc;
+	return ntag424_verify_p_c(k1, k2, p_hex, c_hex, out);
+}
+
+ntag424_verify_status_t ntag424_verify_from_ndef(
+	const uint8_t *ndef, size_t ndef_len,
+	const uint8_t k1[NTAG424_KEY_BYTES],
+	const uint8_t k2[NTAG424_KEY_BYTES],
+	struct ntag424_verify_result *out)
+{
+	char url[NTAG424_MAX_URL];
+	ntag424_verify_status_t rc;
+
+	if (!ndef || !k1 || !k2 || !out) return NTAG424_VERIFY_ERR_INVALID_ARGUMENT;
+	rc = ntag424_extract_url_from_ndef(ndef, ndef_len, url, sizeof(url));
+	if (rc != NTAG424_VERIFY_OK) return rc;
+	return ntag424_verify_from_url(url, k1, k2, out);
 }
