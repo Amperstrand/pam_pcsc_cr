@@ -135,6 +135,46 @@ const char *ntag424_verify_status_string(ntag424_verify_status_t status)
 	}
 }
 
+ntag424_verify_status_t ntag424_derive_keys(
+	const uint8_t issuer_key[NTAG424_KEY_BYTES],
+	const uint8_t uid[NTAG424_UID_BYTES],
+	uint32_t version,
+	uint8_t k1_out[NTAG424_KEY_BYTES],
+	uint8_t k2_out[NTAG424_KEY_BYTES])
+{
+	uint8_t card_key[NTAG424_KEY_BYTES];
+	uint8_t msg[15];
+	ntag424_verify_status_t rc;
+
+	if (!issuer_key || !uid || !k1_out || !k2_out)
+		return NTAG424_VERIFY_ERR_INVALID_ARGUMENT;
+
+	/* K1 = CMAC(IssuerKey, 0x2d003f77) */
+	rc = ntag424_cmac_compute(issuer_key,
+				  (const uint8_t *)"\x2d\x00\x3f\x77", 4,
+				  k1_out);
+	if (rc != NTAG424_VERIFY_OK)
+		return rc;
+
+	/* CardKey = CMAC(IssuerKey, 0x2d003f75 || UID(7) || Version(4 LE)) */
+	msg[0] = 0x2d; msg[1] = 0x00; msg[2] = 0x3f; msg[3] = 0x75;
+	memcpy(msg + 4, uid, NTAG424_UID_BYTES);
+	msg[11] = (uint8_t)(version);
+	msg[12] = (uint8_t)(version >> 8);
+	msg[13] = (uint8_t)(version >> 16);
+	msg[14] = (uint8_t)(version >> 24);
+
+	rc = ntag424_cmac_compute(issuer_key, msg, sizeof(msg), card_key);
+	if (rc != NTAG424_VERIFY_OK)
+		return rc;
+
+	/* K2 = CMAC(CardKey, 0x2d003f78) */
+	rc = ntag424_cmac_compute(card_key,
+				  (const uint8_t *)"\x2d\x00\x3f\x78", 4,
+				  k2_out);
+	return rc;
+}
+
 ntag424_verify_status_t ntag424_extract_p_c(const char *input,
 	char *p_hex, size_t p_hex_size,
 	char *c_hex, size_t c_hex_size)

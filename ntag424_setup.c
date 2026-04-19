@@ -21,25 +21,34 @@
 #include <stdint.h>
 
 #include "ntag424_policy.h"
+#include "ntag424_verifier.h"
 
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"Usage: %s -u <user> --uid <hex> --k1 <hex> --k2 <hex> "
+		"Usage: %s -u <user> --uid <hex> (--issuer-key <hex> | --k1 <hex> --k2 <hex>) "
 		"[options]\n"
 		"\n"
 		"Required:\n"
-		"  -u <username>     PAM username\n"
-		"  --uid <hex>       Card UID (14 hex chars, 7 bytes)\n"
-		"  --k1 <hex>        SDM decryption key (32 hex chars, 16 bytes)\n"
-		"  --k2 <hex>        CMAC verification key (32 hex chars, 16 bytes)\n"
+		"  -u <username>         PAM username\n"
+		"  --uid <hex>           Card UID (14 hex chars, 7 bytes)\n"
+		"\n"
+		"Key source (pick one):\n"
+		"  --issuer-key <hex>    Derive K1/K2 from this issuer key (32 hex)\n"
+		"                        using Bolt Card deterministic derivation.\n"
+		"                        Default card version is 1; use --card-version\n"
+		"                        to override.\n"
+		"  --k1 <hex>            SDM decryption key (32 hex chars)\n"
+		"  --k2 <hex>            CMAC verification key (32 hex chars)\n"
 		"\n"
 		"Optional:\n"
-		"  -c <path>         Config file path (default: /etc/ntag424.conf)\n"
-		"  --id <label>      Card identifier (default: card-<user>-<uid>)\n"
-		"  --force           Overwrite existing card entry with same ID\n"
-		"  -h                Show this help\n"
+		"  -c <path>             Config file path (default: /etc/ntag424.conf)\n"
+		"  --id <label>          Card identifier (default: card-<user>-<uid>)\n"
+		"  --card-version <int>  Card version for key derivation (default: 1)\n"
+		"  --force               Overwrite existing card entry with same ID\n"
+		"  -h                    Show this help\n"
 		"\n"
+		"The config file must be readable only by root (mode 0600).\n"
 		"Exit codes: 0=ok, 1=failed, 2=usage error\n",
 		prog);
 }
@@ -76,12 +85,14 @@ static void uid_hex_lower(const uint8_t *uid, char *out)
 
 int main(int argc, char *argv[])
 {
-	const char *username    = NULL;
-	const char *uid_hex     = NULL;
-	const char *k1_hex      = NULL;
-	const char *k2_hex      = NULL;
-	const char *config_path = "/etc/ntag424.conf";
-	const char *card_id     = NULL;
+	const char *username     = NULL;
+	const char *uid_hex      = NULL;
+	const char *k1_hex       = NULL;
+	const char *k2_hex       = NULL;
+	const char *issuer_key_hex = NULL;
+	unsigned int card_version = 1;
+	const char *config_path  = "/etc/ntag424.conf";
+	const char *card_id      = NULL;
 	int force = 0;
 	int i;
 
@@ -98,6 +109,10 @@ int main(int argc, char *argv[])
 			k1_hex = argv[++i];
 		} else if (strcmp(argv[i], "--k2") == 0 && i + 1 < argc) {
 			k2_hex = argv[++i];
+		} else if (strcmp(argv[i], "--issuer-key") == 0 && i + 1 < argc) {
+			issuer_key_hex = argv[++i];
+		} else if (strcmp(argv[i], "--card-version") == 0 && i + 1 < argc) {
+			card_version = (unsigned int)atoi(argv[++i]);
 		} else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
 			config_path = argv[++i];
 		} else if (strcmp(argv[i], "--id") == 0 && i + 1 < argc) {
@@ -114,8 +129,19 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if (!username || !uid_hex || !k1_hex || !k2_hex) {
-		fprintf(stderr, "Error: -u, --uid, --k1, --k2 are all required.\n");
+	if (!username || !uid_hex) {
+		fprintf(stderr, "Error: -u and --uid are required.\n");
+		usage(argv[0]);
+		return 2;
+	}
+
+	if (issuer_key_hex && (k1_hex || k2_hex)) {
+		fprintf(stderr, "Error: --issuer-key cannot be used with --k1/--k2.\n");
+		return 2;
+	}
+
+	if (!issuer_key_hex && (!k1_hex || !k2_hex)) {
+		fprintf(stderr, "Error: provide either --issuer-key or both --k1 and --k2.\n");
 		usage(argv[0]);
 		return 2;
 	}
@@ -134,14 +160,34 @@ int main(int argc, char *argv[])
 		return 2;
 	}
 
-	if (hex_to_bytes(k1_hex, entry.k1, NTAG424_KEY_BYTES) != 0) {
-		fprintf(stderr, "Error: K1 must be exactly 32 hex characters\n");
-		return 2;
-	}
+	if (issuer_key_hex) {
+		uint8_t issuer_key[NTAG424_KEY_BYTES];
+		ntag424_verify_status_t vrc;
 
-	if (hex_to_bytes(k2_hex, entry.k2, NTAG424_KEY_BYTES) != 0) {
-		fprintf(stderr, "Error: K2 must be exactly 32 hex characters\n");
-		return 2;
+		if (hex_to_bytes(issuer_key_hex, issuer_key, NTAG424_KEY_BYTES) != 0) {
+			fprintf(stderr, "Error: issuer key must be exactly 32 hex characters\n");
+			return 2;
+		}
+
+		vrc = ntag424_derive_keys(issuer_key, entry.uid, card_version,
+					  entry.k1, entry.k2);
+		if (vrc != NTAG424_VERIFY_OK) {
+			fprintf(stderr, "Error: key derivation failed: %s\n",
+				ntag424_verify_status_string(vrc));
+			return 1;
+		}
+
+		printf("Derived keys from issuer key (version %u):\n", card_version);
+	} else {
+		if (hex_to_bytes(k1_hex, entry.k1, NTAG424_KEY_BYTES) != 0) {
+			fprintf(stderr, "Error: K1 must be exactly 32 hex characters\n");
+			return 2;
+		}
+
+		if (hex_to_bytes(k2_hex, entry.k2, NTAG424_KEY_BYTES) != 0) {
+			fprintf(stderr, "Error: K2 must be exactly 32 hex characters\n");
+			return 2;
+		}
 	}
 
 	/* Set username */

@@ -217,32 +217,40 @@ deterministic key derivation (IssuerKey `0x00..01`, Version 1), `pcscd`.
 
 ### How to test with real hardware
 
-**Prerequisites**: pcscd, NFC reader, Bolt Card with known keys.
+**Prerequisites**: pcscd, NFC reader, NTAG424 DNA card (e.g. Bolt Card).
 
 ```sh
 # 1. Read what the card produces
 ./ntag424_testread -v
 
-# 2. Derive K1/K2 from IssuerKey + UID (deterministic algorithm, see
-#    boltcard/docs/DETERMINISTIC.md).  K1 = CMAC(IssuerKey, 2d003f77),
-#    CardKey = CMAC(IssuerKey, 2d003f75 || UID || Version_LE),
-#    K2 = CMAC(CardKey, 2d003f78).
+# 2. Register the card — either with explicit keys or with derived keys:
 
-# 3. Register the card
+# Option A: Bolt Card with deterministic key derivation
 sudo ntag424_setup \
     -u <username> \
     --uid <uid> \
-    --k1  <k1> \
-    --k2  <k2> \
-    -c   /etc/ntag424.conf
+    --issuer-key <32-hex-char-issuer-key> \
+    -c /etc/ntag424.conf
+
+# Option B: Explicit per-card keys
+sudo ntag424_setup \
+    -u <username> \
+    --uid <uid> \
+    --k1  <k1-32hex> \
+    --k2  <k2-32hex> \
+    -c /etc/ntag424.conf
+
+# 3. Secure the config (contains key material — MUST be root-only)
 sudo chmod 600 /etc/ntag424.conf
+sudo chown root:root /etc/ntag424.conf
 
 # 4. Create an isolated PAM service (does not affect system config)
 sudo tee /etc/pam.d/boltcard-login << 'EOF'
 auth    required    pam_pcsc_cr.so \
     backend=ntag424 \
     ntag424_config=/etc/ntag424.conf \
-    ntag424_db=/var/lib/ntag424/replay.db
+    ntag424_db=/var/lib/ntag424/replay.db \
+    cue timeout=5
 account required    pam_permit.so
 EOF
 
@@ -254,10 +262,16 @@ sudo ./pam_test boltcard-login <username>
 sudo ./pam_test -s boltcard-login <username>
 ```
 
+### Security notes
+
+- `/etc/ntag424.conf` contains K1/K2 key material and **must** be `root:root` mode `0600`.
+- `/var/lib/ntag424/replay.db` should be `root:root` mode `0600`.
+- Both `--issuer-key` and explicit `--k1`/`--k2` are supported. Use `--issuer-key`
+  for Bolt Cards deployed with the standard deterministic key derivation.
+
 ### Still TODO
 
 - Packaging (RPM/deb).
-- Optional: `--issuer-key` flag for `ntag424_setup` to auto-derive K1/K2.
 
 ------------------------------------------------------------------------
 

@@ -184,7 +184,7 @@ Released under zlib Open Source license.
 ntag424_setup \- Register NTAG424 DNA NFC cards in the policy config
 .SH SYNOPSIS
 .B ntag424_setup
-\-u \fIuser\fR \-\-uid \fIhex\fR \-\-k1 \fIhex\fR \-\-k2 \fIhex\fR
+\-u \fIuser\fR \-\-uid \fIhex\fR (\-\-issuer\-key \fIhex\fR | \-\-k1 \fIhex\fR \-\-k2 \fIhex\fR)
 [\fIoptions\fR]
 .SH DESCRIPTION
 .B ntag424_setup
@@ -192,6 +192,10 @@ registers an NTAG424 DNA NFC card (typically a Bolt Card deployment)
 in the policy configuration file used by
 .BR pam_pcsc_cr (8).
 The card is assumed to already be deployed with known keys.
+.PP
+Keys can be provided explicitly (\-\-k1/\-\-k2) or derived automatically
+from an issuer key (\-\-issuer\-key) using the Bolt Card deterministic
+key derivation algorithm.  These two modes are mutually exclusive.
 .SH OPTIONS
 .TP
 .BI \-u " user"
@@ -200,17 +204,29 @@ PAM username to associate with this card (required).
 .BI \-\-uid " hex"
 7-byte card UID as 14 hex characters (required).
 .TP
+.BI \-\-issuer\-key " hex"
+16-byte issuer key as 32 hex characters.
+Derives K1 and K2 automatically using the Bolt Card deterministic
+algorithm.  Cannot be combined with \-\-k1/\-\-k2.
+.TP
+.BI \-\-card\-version " int"
+Card version for key derivation (default: 1).
+Only meaningful with \-\-issuer\-key.
+.TP
 .BI \-\-k1 " hex"
-SDM decryption key (K1) as 32 hex characters (required).
+SDM decryption key (K1) as 32 hex characters.
+Must be used together with \-\-k2.
 .TP
 .BI \-\-k2 " hex"
-CMAC verification key (K2) as 32 hex characters (required).
+CMAC verification key (K2) as 32 hex characters.
+Must be used together with \-\-k1.
 .TP
 .BI \-c " path"
 Path to the policy configuration file.
 If omitted, defaults to
 .BR /etc/ntag424.conf .
 The file is created if it does not exist.
+Must be owned by root and mode 0600 (contains key material).
 .TP
 .BI \-\-id " label"
 Card section label in the config file.
@@ -223,17 +239,40 @@ Without this flag, duplicate card IDs cause an error.
 .B \-h
 Show usage help and exit.
 .SH EXAMPLES
-Register a card for user alice:
+Register a Bolt Card using deterministic key derivation:
 .sp
 .nf
-ntag424_setup \\
-    \-u alice \\
-    \-\-uid 04996c6a926980 \\
-    \-\-k1  0c3b25d92b38ae443229dd59ad34b85d \\
-    \-\-k2  b45775776cb224c75bcde7ca3704e933 \\
-    \-c   /etc/ntag424.conf
+sudo ntag424_setup \e
+    \-u alice \e
+    \-\-uid 04996c6a926980 \e
+    \-\-issuer\-key 00000000000000000000000000000001 \e
+    \-c /etc/ntag424.conf
+sudo chmod 600 /etc/ntag424.conf
 .fi
 .sp
+Register a card with explicit per-card keys:
+.sp
+.nf
+sudo ntag424_setup \e
+    \-u alice \e
+    \-\-uid 04996c6a926980 \e
+    \-\-k1  0c3b25d92b38ae443229dd59ad34b85d \e
+    \-\-k2  b45775776cb224c75bcde7ca3704e933 \e
+    \-c   /etc/ntag424.conf
+sudo chmod 600 /etc/ntag424.conf
+.fi
+.sp
+.SH FILES
+.TP
+.B /etc/ntag424.conf
+Policy configuration file mapping cards to PAM users.
+Contains K1/K2 key material and must be
+.BR root:root " mode " 0600 .
+.TP
+.B /var/lib/ntag424/replay.db
+SQLite database for replay counter tracking.
+Should be
+.BR root:root " mode " 0600 .
 .SH COPYRIGHT
 2013 Eugene G. Crosser
 .br

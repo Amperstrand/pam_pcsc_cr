@@ -115,4 +115,21 @@ ntag424_verify_status_t ntag424_sv2_and_ct(
 
 const char *ntag424_verify_status_string(ntag424_verify_status_t status);
 
+/*
+ * Derive K1 and K2 from an IssuerKey using the Bolt Card deterministic
+ * key derivation algorithm:
+ *   K1       = AES-CMAC(IssuerKey, 0x2d003f77)
+ *   CardKey  = AES-CMAC(IssuerKey, 0x2d003f75 || UID(7) || Version(4 LE))
+ *   K2       = AES-CMAC(CardKey, 0x2d003f78)
+ *
+ * uid must be 7 bytes, version is a 32-bit LE integer (typically 0 or 1).
+ * k1_out and k2_out must each be 16-byte buffers.
+ */
+ntag424_verify_status_t ntag424_derive_keys(
+	const uint8_t issuer_key[NTAG424_KEY_BYTES],
+	const uint8_t uid[NTAG424_UID_BYTES],
+	uint32_t version,
+	uint8_t k1_out[NTAG424_KEY_BYTES],
+	uint8_t k2_out[NTAG424_KEY_BYTES]);
+
 #endif
