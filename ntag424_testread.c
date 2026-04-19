@@ -7,17 +7,17 @@
  *   - NDEF length in bytes
  *   - whether p= and c= parameters are present in the extracted URL
  *
- * This tool intentionally does NOT print:
- *   - the full URL
- *   - the p= or c= parameter values
- *   - any key material
+ * By default only summary info is printed.  Use -v to also print the full
+ * URL and the p= / c= parameter values (these are single-use, counter-based
+ * card outputs — not key material — and are safe to display for testing).
  *
  * It requires a live pcscd daemon and an NTAG424 (or compatible T4T) card.
  *
  * Usage:
- *   ntag424_testread [-r reader_substring]
+ *   ntag424_testread [-r reader_substring] [-v] [-h]
  *
  *   -r reader_substring  substring match for reader name (default: first reader)
+ *   -v                   verbose: print full URL and p=/c= values
  *   -h                   show this help
  */
 
@@ -36,20 +36,21 @@
 static void usage(const char *prog)
 {
 	fprintf(stderr,
-		"Usage: %s [-r reader_substring] [-h]\n"
+		"Usage: %s [-r reader_substring] [-v] [-h]\n"
 		"\n"
 		"  -r <substr>  select reader whose name contains <substr>\n"
 		"               (default: first available reader)\n"
+		"  -v           verbose: print full URL and p=/c= parameter values\n"
 		"  -h           show this help\n"
 		"\n"
-		"Requires a live pcscd daemon and an NTAG424 (Type 4) card.\n"
-		"Does NOT print sensitive URL/parameter values.\n",
+		"Requires a live pcscd daemon and an NTAG424 (Type 4) card.\n",
 		prog);
 }
 
 int main(int argc, char *argv[])
 {
 	const char *reader_substr = NULL;
+	int verbose = 0;
 	int opt;
 
 	struct ntag424_pcsc_ctx *ctx = NULL;
@@ -63,10 +64,13 @@ int main(int argc, char *argv[])
 	char c_hex[NTAG424_C_HEX_LEN + 1];
 	int p_found, c_found;
 
-	while ((opt = getopt(argc, argv, "r:h")) != -1) {
+	while ((opt = getopt(argc, argv, "r:vh")) != -1) {
 		switch (opt) {
 		case 'r':
 			reader_substr = optarg;
+			break;
+		case 'v':
+			verbose = 1;
 			break;
 		case 'h':
 			usage(argv[0]);
@@ -150,6 +154,8 @@ int main(int argc, char *argv[])
 			       ntag424_verify_status_string(vrc));
 		} else {
 			printf("URL extraction: ok\n");
+			if (verbose)
+				printf("URL:            %s\n", url);
 
 			vrc = ntag424_extract_p_c(url,
 						  p_hex, sizeof(p_hex),
@@ -158,7 +164,11 @@ int main(int argc, char *argv[])
 			c_found = (vrc == NTAG424_VERIFY_OK);
 
 			printf("p parameter:    %s\n", p_found ? "found" : "not found");
+			if (p_found && verbose)
+				printf("p value:        %s\n", p_hex);
 			printf("c parameter:    %s\n", c_found ? "found" : "not found");
+			if (c_found && verbose)
+				printf("c value:        %s\n", c_hex);
 		}
 	}
 
