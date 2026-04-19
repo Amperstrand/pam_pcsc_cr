@@ -15,6 +15,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdint.h>
+#include <unistd.h>
 
 #include "ntag424_policy.h"
 #include "ntag424_verifier.h"
@@ -450,7 +451,6 @@ ntag424_policy_status_t ntag424_policy_try_verify(
 		if (vrc != NTAG424_VERIFY_OK)
 			continue;
 
-		/* Crypto verified — now check UID against config (constant-time) */
 		if (!ct_bytes_eq(result.uid, e->uid, NTAG424_UID_BYTES))
 			continue;
 
@@ -460,4 +460,148 @@ ntag424_policy_status_t ntag424_policy_try_verify(
 	}
 
 	return NTAG424_POLICY_ERR_NO_MATCH;
+}
+
+/* =========================================================================
+ * Card entry validation
+ * ====================================================================== */
+
+ntag424_policy_status_t ntag424_policy_validate_card_entry(
+	const struct ntag424_card_entry *entry)
+{
+	if (!entry)
+		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
+	if (entry->card_id[0] == '\0')
+		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
+	if (entry->username[0] == '\0')
+		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
+	return NTAG424_POLICY_OK;
+}
+
+/* =========================================================================
+ * Config file writing
+ * ====================================================================== */
+
+static void format_hex_lower(const uint8_t *src, size_t src_len,
+			     char *dst)
+{
+	size_t i;
+	for (i = 0; i < src_len; i++)
+		snprintf(dst + i * 2, 3, "%02x", (unsigned)src[i]);
+}
+
+static ntag424_policy_status_t write_card_entry(FILE *f,
+						const struct ntag424_card_entry *e)
+{
+	char uid_hex[NTAG424_UID_BYTES * 2 + 1];
+	char k1_hex[NTAG424_KEY_BYTES * 2 + 1];
+	char k2_hex[NTAG424_KEY_BYTES * 2 + 1];
+
+	format_hex_lower(e->uid, NTAG424_UID_BYTES, uid_hex);
+	format_hex_lower(e->k1, NTAG424_KEY_BYTES, k1_hex);
+	format_hex_lower(e->k2, NTAG424_KEY_BYTES, k2_hex);
+
+	uid_hex[NTAG424_UID_BYTES * 2] = '\0';
+	k1_hex[NTAG424_KEY_BYTES * 2] = '\0';
+	k2_hex[NTAG424_KEY_BYTES * 2] = '\0';
+
+	if (fprintf(f, "[card:%s]\nuid  = %s\nk1   = %s\nk2   = %s\nuser = %s\n",
+		    e->card_id, uid_hex, k1_hex, k2_hex,
+		    e->username) < 0)
+		return NTAG424_POLICY_ERR_OPEN;
+
+	return NTAG424_POLICY_OK;
+}
+
+ntag424_policy_status_t ntag424_policy_add_card(
+	const char *config_path,
+	const struct ntag424_card_entry *entry,
+	int overwrite)
+{
+	ntag424_policy_status_t rc;
+	struct ntag424_policy *policy = NULL;
+	FILE *f;
+	int found_idx = -1;
+	size_t i;
+	char tmp_path[512];
+
+	rc = ntag424_policy_validate_card_entry(entry);
+	if (rc != NTAG424_POLICY_OK)
+		return rc;
+
+	if (!config_path)
+		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
+
+	/* Try to load existing config */
+	rc = ntag424_policy_load(config_path, &policy);
+
+	if (rc == NTAG424_POLICY_ERR_OPEN) {
+		/* File doesn't exist — create new */
+		f = fopen(config_path, "w");
+		if (!f)
+			return NTAG424_POLICY_ERR_OPEN;
+		rc = write_card_entry(f, entry);
+		fclose(f);
+		return rc;
+	}
+
+	if (rc != NTAG424_POLICY_OK)
+		return rc;  /* malformed existing config */
+
+	/* Check for duplicate card_id */
+	for (i = 0; i < policy->num_cards; i++) {
+		if (strcmp(policy->cards[i].card_id, entry->card_id) == 0) {
+			found_idx = (int)i;
+			break;
+		}
+	}
+
+	if (found_idx >= 0 && !overwrite) {
+		ntag424_policy_free(policy);
+		return NTAG424_POLICY_ERR_PARSE;
+	}
+
+	/* Write to temp file, then rename for atomicity */
+	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d",
+		 config_path, (int)getpid());
+
+	f = fopen(tmp_path, "w");
+	if (!f) {
+		ntag424_policy_free(policy);
+		return NTAG424_POLICY_ERR_OPEN;
+	}
+
+	for (i = 0; i < policy->num_cards; i++) {
+		if ((int)i == found_idx) {
+			rc = write_card_entry(f, entry);
+		} else {
+			rc = write_card_entry(f, &policy->cards[i]);
+		}
+		if (rc != NTAG424_POLICY_OK) {
+			fclose(f);
+			unlink(tmp_path);
+			ntag424_policy_free(policy);
+			return rc;
+		}
+	}
+
+	if (found_idx < 0) {
+		rc = write_card_entry(f, entry);
+		if (rc != NTAG424_POLICY_OK) {
+			fclose(f);
+			unlink(tmp_path);
+			ntag424_policy_free(policy);
+			return rc;
+		}
+	}
+
+	fclose(f);
+	ntag424_policy_free(policy);
+
+	if (rename(tmp_path, config_path) != 0) {
+		unlink(tmp_path);
+		return NTAG424_POLICY_ERR_OPEN;
+	}
+
+	return NTAG424_POLICY_OK;
 }

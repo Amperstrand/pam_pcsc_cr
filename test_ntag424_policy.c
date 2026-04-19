@@ -786,6 +786,351 @@ static void test_status_strings(void)
 }
 
 /* ============================================================
+ * H. Card entry validation and config file writing
+ * ========================================================== */
+
+static void test_validate_good_entry(void)
+{
+	struct ntag424_card_entry e;
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "test1");
+	snprintf(e.username, sizeof(e.username), "alice");
+	parse_hex(TV_UID, e.uid, NTAG424_UID_BYTES);
+	parse_hex(TV_K1, e.k1, NTAG424_KEY_BYTES);
+	parse_hex(TV_K2, e.k2, NTAG424_KEY_BYTES);
+
+	ASSERT("validate_good", ntag424_policy_validate_card_entry(&e)
+	       == NTAG424_POLICY_OK);
+}
+
+static void test_validate_null_entry(void)
+{
+	ASSERT("validate_null", ntag424_policy_validate_card_entry(NULL)
+	       == NTAG424_POLICY_ERR_INVALID_ARGUMENT);
+}
+
+static void test_validate_empty_card_id(void)
+{
+	struct ntag424_card_entry e;
+	memset(&e, 0, sizeof(e));
+	e.card_id[0] = '\0';
+	snprintf(e.username, sizeof(e.username), "alice");
+	ASSERT("validate_empty_cid",
+	       ntag424_policy_validate_card_entry(&e)
+	       == NTAG424_POLICY_ERR_INVALID_ARGUMENT);
+}
+
+static void test_validate_empty_username(void)
+{
+	struct ntag424_card_entry e;
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "test1");
+	e.username[0] = '\0';
+	ASSERT("validate_empty_user",
+	       ntag424_policy_validate_card_entry(&e)
+	       == NTAG424_POLICY_ERR_INVALID_ARGUMENT);
+}
+
+static void test_add_to_new_file(void)
+{
+	char path[64];
+	struct ntag424_card_entry e;
+	struct ntag424_policy *pol;
+	const struct ntag424_card_entry *found;
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_add_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+		unlink(path);
+	}
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "card1");
+	snprintf(e.username, sizeof(e.username), "alice");
+	parse_hex(TV_UID, e.uid, NTAG424_UID_BYTES);
+	parse_hex(TV_K1, e.k1, NTAG424_KEY_BYTES);
+	parse_hex(TV_K2, e.k2, NTAG424_KEY_BYTES);
+
+	ASSERT("add_new_file",
+	       ntag424_policy_add_card(path, &e, 0) == NTAG424_POLICY_OK);
+
+	ASSERT("add_new_parse",
+	       ntag424_policy_load(path, &pol) == NTAG424_POLICY_OK);
+
+	ASSERT("add_new_lookup",
+	       ntag424_policy_lookup(pol, "alice", e.uid, &found)
+	       == NTAG424_POLICY_OK);
+
+	ASSERT("add_new_user",
+	       found && strcmp(found->username, "alice") == 0);
+
+	ASSERT("add_new_cid",
+	       found && strcmp(found->card_id, "card1") == 0);
+
+	ASSERT("add_new_k1",
+	       found && memcmp(found->k1, e.k1, NTAG424_KEY_BYTES) == 0);
+	ASSERT("add_new_k2",
+	       found && memcmp(found->k2, e.k2, NTAG424_KEY_BYTES) == 0);
+
+	ntag424_policy_free(pol);
+	unlink(path);
+}
+
+static void test_add_to_existing_file(void)
+{
+	char path[64];
+	struct ntag424_policy *pol;
+	const struct ntag424_card_entry *found;
+	struct ntag424_card_entry e2;
+	uint8_t uid2[NTAG424_UID_BYTES];
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_add2_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+	}
+	write_temp_config(GOOD_CONFIG, path, sizeof(path));
+
+	memset(&e2, 0, sizeof(e2));
+	snprintf(e2.card_id, sizeof(e2.card_id), "card2");
+	snprintf(e2.username, sizeof(e2.username), "bob");
+	parse_hex("04AABBCCDDEEFF", uid2, NTAG424_UID_BYTES);
+	memcpy(e2.uid, uid2, NTAG424_UID_BYTES);
+	parse_hex("00112233445566778899aabbccddeeff", e2.k1, NTAG424_KEY_BYTES);
+	parse_hex("ffeeddccbbaa99887766554433221100", e2.k2, NTAG424_KEY_BYTES);
+
+	ASSERT("add_existing",
+	       ntag424_policy_add_card(path, &e2, 0) == NTAG424_POLICY_OK);
+
+	ASSERT("add_existing_parse",
+	       ntag424_policy_load(path, &pol) == NTAG424_POLICY_OK);
+
+	{
+		uint8_t alice_uid[NTAG424_UID_BYTES];
+		parse_hex(TV_UID, alice_uid, NTAG424_UID_BYTES);
+
+		ASSERT("add_existing_alice",
+		       ntag424_policy_lookup(pol, "alice", alice_uid, &found)
+		       == NTAG424_POLICY_OK);
+
+		ASSERT("add_existing_bob",
+		       ntag424_policy_lookup(pol, "bob", uid2, &found)
+		       == NTAG424_POLICY_OK);
+	}
+
+	ntag424_policy_free(pol);
+	unlink(path);
+}
+
+static void test_add_duplicate_rejected(void)
+{
+	char path[64];
+	struct ntag424_card_entry e;
+	uint8_t uid2[NTAG424_UID_BYTES];
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_dup_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+	}
+	write_temp_config(GOOD_CONFIG, path, sizeof(path));
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "testcard1");
+	snprintf(e.username, sizeof(e.username), "mallory");
+	parse_hex("04DEADBEEF0000", uid2, NTAG424_UID_BYTES);
+	memcpy(e.uid, uid2, NTAG424_UID_BYTES);
+
+	ASSERT("dup_rejected",
+	       ntag424_policy_add_card(path, &e, 0)
+	       == NTAG424_POLICY_ERR_PARSE);
+
+	unlink(path);
+}
+
+static void test_add_duplicate_overwrite(void)
+{
+	char path[64];
+	struct ntag424_policy *pol;
+	struct ntag424_card_entry e;
+	uint8_t uid2[NTAG424_UID_BYTES];
+	const struct ntag424_card_entry *found;
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_ow_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+	}
+	write_temp_config(GOOD_CONFIG, path, sizeof(path));
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "testcard1");
+	snprintf(e.username, sizeof(e.username), "mallory");
+	parse_hex("04DEADBEEF0000", uid2, NTAG424_UID_BYTES);
+	memcpy(e.uid, uid2, NTAG424_UID_BYTES);
+	parse_hex("0c3b25d92b38ae443229dd59ad34b85d", e.k1, NTAG424_KEY_BYTES);
+	parse_hex("b45775776cb224c75bcde7ca3704e933", e.k2, NTAG424_KEY_BYTES);
+
+	ASSERT("dup_overwrite",
+	       ntag424_policy_add_card(path, &e, 1) == NTAG424_POLICY_OK);
+
+	ASSERT("dup_ow_parse",
+	       ntag424_policy_load(path, &pol) == NTAG424_POLICY_OK);
+
+	ASSERT("dup_ow_user",
+	       ntag424_policy_lookup(pol, "mallory", uid2, &found)
+	       == NTAG424_POLICY_OK);
+
+	ASSERT("dup_ow_not_alice",
+	       ntag424_policy_lookup(pol, "alice", uid2, &found)
+	       == NTAG424_POLICY_ERR_NO_MATCH);
+
+	ntag424_policy_free(pol);
+	unlink(path);
+}
+
+static void test_add_null_path(void)
+{
+	struct ntag424_card_entry e;
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "x");
+	snprintf(e.username, sizeof(e.username), "x");
+
+	ASSERT("add_null_path",
+	       ntag424_policy_add_card(NULL, &e, 0)
+	       == NTAG424_POLICY_ERR_INVALID_ARGUMENT);
+}
+
+static void test_add_null_entry(void)
+{
+	ASSERT("add_null_entry",
+	       ntag424_policy_add_card("/tmp/x", NULL, 0)
+	       == NTAG424_POLICY_ERR_INVALID_ARGUMENT);
+}
+
+static void test_add_invalid_entry(void)
+{
+	struct ntag424_card_entry e;
+	memset(&e, 0, sizeof(e));
+
+	ASSERT("add_invalid_entry",
+	       ntag424_policy_add_card("/tmp/x", &e, 0)
+	       == NTAG424_POLICY_ERR_INVALID_ARGUMENT);
+}
+
+static void test_add_to_malformed_file(void)
+{
+	char path[64];
+	struct ntag424_card_entry e;
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_mal_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+	}
+	write_temp_config("garbage content\nnot a config\n", path, sizeof(path));
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "c1");
+	snprintf(e.username, sizeof(e.username), "alice");
+	parse_hex(TV_UID, e.uid, NTAG424_UID_BYTES);
+	parse_hex(TV_K1, e.k1, NTAG424_KEY_BYTES);
+	parse_hex(TV_K2, e.k2, NTAG424_KEY_BYTES);
+
+	ASSERT("add_malformed",
+	       ntag424_policy_add_card(path, &e, 0)
+	       == NTAG424_POLICY_ERR_PARSE);
+
+	unlink(path);
+}
+
+static void test_add_preserves_existing(void)
+{
+	char path[64];
+	struct ntag424_policy *pol;
+	struct ntag424_card_entry e2;
+	const struct ntag424_card_entry *found = NULL;
+	uint8_t uid2[NTAG424_UID_BYTES];
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_pres_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+	}
+	write_temp_config(GOOD_CONFIG, path, sizeof(path));
+
+	memset(&e2, 0, sizeof(e2));
+	snprintf(e2.card_id, sizeof(e2.card_id), "card2");
+	snprintf(e2.username, sizeof(e2.username), "bob");
+	parse_hex("04AABBCCDDEEFF", uid2, NTAG424_UID_BYTES);
+	memcpy(e2.uid, uid2, NTAG424_UID_BYTES);
+	parse_hex("00112233445566778899aabbccddeeff", e2.k1, NTAG424_KEY_BYTES);
+	parse_hex("ffeeddccbbaa99887766554433221100", e2.k2, NTAG424_KEY_BYTES);
+
+	ntag424_policy_add_card(path, &e2, 0);
+
+	ntag424_policy_load(path, &pol);
+	{
+		uint8_t alice_uid[NTAG424_UID_BYTES];
+		parse_hex(TV_UID, alice_uid, NTAG424_UID_BYTES);
+
+		ASSERT("preserve_alice",
+		       ntag424_policy_lookup(pol, "alice", alice_uid, &found)
+		       == NTAG424_POLICY_OK);
+	}
+
+	ntag424_policy_free(pol);
+	unlink(path);
+}
+
+static void test_add_roundtrip_hex(void)
+{
+	char path[64];
+	struct ntag424_policy *pol;
+	struct ntag424_card_entry e;
+	const struct ntag424_card_entry *found = NULL;
+	uint8_t expected_uid[NTAG424_UID_BYTES];
+	uint8_t expected_k1[NTAG424_KEY_BYTES];
+	uint8_t expected_k2[NTAG424_KEY_BYTES];
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_rt_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+		unlink(path);
+	}
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "rt1");
+	snprintf(e.username, sizeof(e.username), "carol");
+	parse_hex("04112233445566", expected_uid, NTAG424_UID_BYTES);
+	memcpy(e.uid, expected_uid, NTAG424_UID_BYTES);
+	parse_hex("aabbccddeeff00112233445566778899", expected_k1, NTAG424_KEY_BYTES);
+	memcpy(e.k1, expected_k1, NTAG424_KEY_BYTES);
+	parse_hex("99887766554433221100ffeeddccbbaa", expected_k2, NTAG424_KEY_BYTES);
+	memcpy(e.k2, expected_k2, NTAG424_KEY_BYTES);
+
+	ntag424_policy_add_card(path, &e, 0);
+	ntag424_policy_load(path, &pol);
+
+	ntag424_policy_lookup(pol, "carol", expected_uid, &found);
+
+	ASSERT("rt_uid",
+	       found && memcmp(found->uid, expected_uid,
+		      NTAG424_UID_BYTES) == 0);
+	ASSERT("rt_k1",
+	       found && memcmp(found->k1, expected_k1,
+		      NTAG424_KEY_BYTES) == 0);
+	ASSERT("rt_k2",
+	       found && memcmp(found->k2, expected_k2,
+		      NTAG424_KEY_BYTES) == 0);
+
+	ntag424_policy_free(pol);
+	unlink(path);
+}
+
+/* ============================================================
  * main
  * ========================================================== */
 
@@ -827,6 +1172,22 @@ int main(void)
 	/* D: Null args */
 	test_null_args();
 	test_status_strings();
+
+	/* E: Card entry validation and writing */
+	test_validate_good_entry();
+	test_validate_null_entry();
+	test_validate_empty_card_id();
+	test_validate_empty_username();
+	test_add_to_new_file();
+	test_add_to_existing_file();
+	test_add_duplicate_rejected();
+	test_add_duplicate_overwrite();
+	test_add_null_path();
+	test_add_null_entry();
+	test_add_invalid_entry();
+	test_add_to_malformed_file();
+	test_add_preserves_existing();
+	test_add_roundtrip_hex();
 
 	if (tests_run == tests_passed) {
 		printf("PASS: %d/%d tests\n", tests_passed, tests_run);

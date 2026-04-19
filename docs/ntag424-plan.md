@@ -234,11 +234,28 @@
     options, reader substr default NULL (5 tests).
   - Status string coverage (8 tests).
 
-### Milestone 5 (next)
+### Milestone 5 (done)
 
-- Enrollment / setup tooling: a tool or documented procedure to write the NTAG424
-  DNA keys to a card and add it to the policy config.
+- Added `ntag424_policy_validate_card_entry` and `ntag424_policy_add_card`
+  to `ntag424_policy.{c,h}`:
+  - Validate card entry fields (non-empty card_id, username).
+  - `ntag424_policy_add_card(path, entry, overwrite)`: creates a new config
+    file if absent; validates existing config before appending; rejects
+    duplicate card_id unless overwrite=1; writes via temp file + atomic
+    rename for crash safety.
+  - 28 new unit tests (validation, new file, append, duplicate reject,
+    overwrite, null args, malformed file, preserve, hex round-trip).
+- Added `ntag424_setup` CLI tool (`bin_PROGRAMS`):
+  - Registers a card in the policy config.
+  - Auto-generates card ID as `card-<user>-<uid>` if not supplied.
+  - `--force` flag for overwriting existing entries.
+  - Validates UID (14 hex), K1/K2 (32 hex) before writing.
+- Total policy tests: 86 (up from 58).
+
+### Still TODO
+
 - Hardening / polish: key derivation, lockout handling, logging review.
+- Real-hardware validation with live pcscd daemon and NTAG424 card.
 
 ## Known blockers / uncertainty
 

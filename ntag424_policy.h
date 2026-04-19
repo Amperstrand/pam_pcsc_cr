@@ -147,4 +147,38 @@ ntag424_policy_status_t ntag424_policy_try_verify(
 	struct ntag424_verify_result *result_out,
 	const struct ntag424_card_entry **card_out);
 
+/* -------------------------------------------------------------------------
+ * Card entry validation and config file writing
+ * ---------------------------------------------------------------------- */
+
+/*
+ * Validate a card entry's fields without writing anything.
+ * Checks: non-empty card_id and username.
+ * Returns NTAG424_POLICY_OK if valid, NTAG424_POLICY_ERR_INVALID_ARGUMENT
+ * otherwise.
+ */
+ntag424_policy_status_t ntag424_policy_validate_card_entry(
+	const struct ntag424_card_entry *entry);
+
+/*
+ * Add a card entry to the policy config file.
+ *
+ * If the file does not exist, creates it with the single entry.
+ * If the file exists:
+ *   - Parses it first to validate existing content (must be a valid config).
+ *   - If a card with the same card_id already exists:
+ *     - If overwrite != 0: rewrites the file with the updated entry.
+ *     - If overwrite == 0: returns NTAG424_POLICY_ERR_PARSE (duplicate).
+ *   - Appends the new [card:<id>] section otherwise.
+ *
+ * The entry is validated via ntag424_policy_validate_card_entry first.
+ * UID is written as 14 lowercase hex chars; K1/K2 as 32 lowercase hex chars.
+ *
+ * Returns NTAG424_POLICY_OK on success.
+ */
+ntag424_policy_status_t ntag424_policy_add_card(
+	const char *config_path,
+	const struct ntag424_card_entry *entry,
+	int overwrite);
+
 #endif /* _NTAG424_POLICY_H */

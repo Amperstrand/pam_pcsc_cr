@@ -23,8 +23,9 @@ pam_pcsc_cr_la_LIBTOOLFLAGS = --tag=disable-static
 pam_pcsc_cr_la_LDFLAGS = -module -avoid-version
 pam_pcsc_cr_la_LIBADD = libpcsc_cr.la
 
-bin_PROGRAMS = pam_cr_setup
+bin_PROGRAMS = pam_cr_setup ntag424_setup
 pam_cr_setup_LDADD = libpcsc_cr.la
+ntag424_setup_LDADD = libpcsc_cr.la
 
 man_MANS = pam_cr_setup.8 pam_pcsc_cr.8
 

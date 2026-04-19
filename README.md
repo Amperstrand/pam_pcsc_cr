@@ -50,7 +50,7 @@ you put it on the NFC reader.
 
 The branch `copilot/implement-ntag424-support` adds support for
 **NTAG424 DNA** (NFC Forum Type 4) cards as a local PAM second factor.
-Milestones 1–4 are complete.
+Milestones 1–5 are complete.
 
 ### Current status
 
@@ -58,10 +58,11 @@ Milestones 1–4 are complete.
 |---|---|---|
 | Verifier (crypto) | `ntag424_verifier.{c,h}` | ✅ done — 120 tests |
 | Reader (PC/SC + NDEF) | `ntag424_reader.{c,h}` | ✅ done — 53 tests |
-| Config + policy | `ntag424_policy.{c,h}` | ✅ done — 58 tests |
+| Config + policy | `ntag424_policy.{c,h}` | ✅ done — 86 tests |
 | Replay protection | `ntag424_replay.{c,h}` | ✅ done — 32 tests |
 | PAM orchestration | `ntag424_pam_glue.{c,h}` | ✅ done — 33 tests |
 | PAM module integration | `pam_pcsc_cr.c` | ✅ done — opt-in via `backend=ntag424` |
+| Setup tool | `ntag424_setup.c` | ✅ done — card registration CLI |
 
 ### What exists now
 
@@ -158,6 +159,41 @@ auth   required   pam_pcsc_cr.so               \
 
 - Connects to a real reader/card and prints NDEF length and whether
   `p=`/`c=` parameters are present. Does **not** print URL or key values.
+
+### End-to-end test procedure (no hardware required)
+
+This procedure exercises the full setup → verify → replay-check pipeline
+using known BoltCard test vectors:
+
+```sh
+# 1. Register a card in the policy config
+./ntag424_setup \
+    -u alice \
+    --uid 04996c6a926980 \
+    --k1  0c3b25d92b38ae443229dd59ad34b85d \
+    --k2  b45775776cb224c75bcde7ca3704e933 \
+    -c   /tmp/test-ntag424.conf
+# → Added card [card-alice-04996c6a926980] for user [alice] to /tmp/test-ntag424.conf
+
+# 2. Verify authentication (BoltCard test vector 1, counter=3)
+./ntag424_authcheck \
+    -u alice \
+    -c /tmp/test-ntag424.conf \
+    -d /tmp/test-ntag424-replay.db \
+    --url "https://x.test?p=4E2E289D945A66BB13377A728884E867&c=E19CCB1FED8892CE"
+# → AUTH OK
+
+# 3. Verify replay rejection (same URL / same counter)
+./ntag424_authcheck \
+    -u alice \
+    -c /tmp/test-ntag424.conf \
+    -d /tmp/test-ntag424-replay.db \
+    --url "https://x.test?p=4E2E289D945A66BB13377A728884E867&c=E19CCB1FED8892CE"
+# → AUTH FAILED: counter not strictly increasing (replay detected)
+
+# Cleanup
+rm -f /tmp/test-ntag424.conf /tmp/test-ntag424-replay.db
+```
 
 ### Still TODO
 
