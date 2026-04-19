@@ -44,6 +44,277 @@ the library and the daemon) is used to communicate with the token over
 that it works equally well when you plug the token in a USB slot and if
 you put it on the NFC reader.
 
+------------------------------------------------------------------------
+
+## NTAG424 DNA second-factor work in progress
+
+The branch `copilot/implement-ntag424-support` adds support for
+**NTAG424 DNA** (NFC Forum Type 4) cards as a local PAM second factor.
+Milestones 1–5 are complete.
+
+### Current status
+
+| Module | File(s) | Status |
+|---|---|---|
+| Verifier (crypto) | `ntag424_verifier.{c,h}` | ✅ done — 120 tests |
+| Reader (PC/SC + NDEF) | `ntag424_reader.{c,h}` | ✅ done — 53 tests |
+| Config + policy | `ntag424_policy.{c,h}` | ✅ done — 86 tests |
+| Replay protection | `ntag424_replay.{c,h}` | ✅ done — 32 tests |
+| PAM orchestration | `ntag424_pam_glue.{c,h}` | ✅ done — 33 tests |
+| PAM module integration | `pam_pcsc_cr.c` | ✅ done — opt-in via `backend=ntag424` |
+| Setup tool | `ntag424_setup.c` | ✅ done — card registration CLI |
+
+### What exists now
+
+**Verifier library** (`ntag424_verifier.{c,h}`):
+
+- Extracts `p=` and `c=` parameters from a URL or NDEF message.
+- Decrypts `p` with K1 to recover the card UID and SDM read counter.
+- Verifies the truncated CMAC `c` derived from K2.
+- All logic is pure C with no hardware dependency; 120 unit tests pass
+  without any NFC reader.
+
+**Reader layer** (`ntag424_reader.{c,h}`):
+
+- Transport abstraction (`ntag424_transport_t`) separates APDU exchange
+  from the NFC Forum Type 4 read flow, enabling mock-based testing.
+- `ntag424_parse_cc`: parses the NFC Forum Capability Container (CC).
+- `ntag424_read_ndef`: executes the full T4T read sequence
+  (SELECT app → SELECT CC → READ CC → SELECT NDEF file → READ NDEF).
+- PC/SC backend (`ntag424_pcsc_*`): wraps pcsc-lite; protocol (T=0/T=1)
+  is negotiated, not hardcoded.
+- 53 unit tests run with mock APDU responses — no hardware required.
+
+**Config / policy layer** (`ntag424_policy.{c,h}`):
+
+- Parses a small, strict INI-like config file mapping card identities
+  (UID + key material) to PAM usernames.
+- `ntag424_policy_load`: strict fail-closed parser; rejects any unknown
+  keys, missing required fields, malformed hex, or duplicate card IDs.
+- `ntag424_policy_lookup`: finds a card entry matching username + UID
+  using a constant-time UID comparison.
+- `ntag424_policy_try_verify`: iterates cards for a user, resolves keys
+  via the priority chain (explicit k1/k2 > per-card issuer_key > global
+  default), runs the full crypto verifier, and checks the recovered UID
+  against the config — the single call from URL + username to verified
+  card identity.
+- 111 unit tests, no hardware required.
+
+Config format example (`/etc/ntag424.conf`, readable only by root):
+
+```ini
+# Optional: system-wide default issuer key for key derivation.
+# Cards without explicit keys or per-card issuer_key will use this.
+[defaults]
+issuer_key = 00000000000000000000000000000001
+
+# Card using global default derivation (only uid + user needed)
+[card:boltcard-alice]
+uid  = 04996c6a926980       # 7-byte card UID (14 hex chars)
+user = alice                # PAM username
+
+# Card with explicit per-card keys
+[card:custom-card]
+uid  = 04996c6a926980
+k1   = 0c3b25d92b38ae443229dd59ad34b85d   # SDM decryption key
+k2   = b45775776cb224c75bcde7ca3704e933   # CMAC verification key
+user = bob
+
+# Card with per-card issuer key
+[card:special]
+uid        = 04aaaaabbbbbb80
+issuer_key = deadbeefdeadbeefdeadbeefdeadbeef
+user       = charlie
+```
+
+**Replay protection** (`ntag424_replay.{c,h}`):
+
+- SQLite database (WAL mode) recording the last accepted SDM read counter
+  per card UID.
+- `ntag424_replay_check_and_update`: atomic `BEGIN IMMEDIATE` transaction;
+  accepts strictly-greater counters; rejects equal or lower (replay);
+  all errors fail closed.
+- 32 unit tests using temp databases, no hardware required.
+
+**PAM orchestration layer** (`ntag424_pam_glue.{c,h}`):
+
+- Thin layer that composes reader + policy + replay into a single call.
+- `ntag424_auth_run`: PC/SC backend entry point.
+- `ntag424_auth_run_with_transport`: injectable transport for unit tests.
+- All errors fail closed; nothing logged contains URL, p/c, or key material.
+- 33 unit tests using mock APDU transport — no hardware required.
+
+**PAM module integration** (`pam_pcsc_cr.c`):
+
+- NTAG424 mode is selected by adding `backend=ntag424` to the PAM module
+  arguments. The legacy YubiKey/HMAC-SHA1 path remains entirely unchanged
+  and is the default.
+- New module arguments: `ntag424_config=`, `ntag424_db=`, `ntag424_reader=`,
+  `cue`, `timeout=N`.
+- See `pam_pcsc_cr.8` for full documentation.
+
+Example PAM configuration — card as second factor with password fallback:
+
+```
+# NTAG424 card auth (sufficient = skip password if card passes)
+auth  [success=ignore default=1]  pam_succeed_if.so user = someuser quiet
+auth  sufficient  pam_pcsc_cr.so  \
+         backend=ntag424            \
+         ntag424_config=/etc/ntag424.conf \
+         ntag424_db=/var/lib/ntag424/replay.db \
+         cue timeout=5
+
+# Password fallback (reached if card auth fails or skips)
+auth  required  pam_unix.so
+```
+
+**Non-PAM end-to-end harness** (`ntag424_authcheck`, `noinst_PROGRAMS`):
+
+- Exercises the full Milestone 3+ stack without PAM:
+  `ntag424_authcheck -u <user> -c <config> -d <db> --url <url>`
+- Prints `AUTH OK` (exit 0) or `AUTH FAILED: <reason>` (exit 1).
+- Does **not** print URL, `p`, `c`, or key material.
+
+**Manual NFC reader test utility** (`ntag424_testread`, `noinst_PROGRAMS`):
+
+- Connects to a real reader/card and prints NDEF length and whether
+  `p=`/`c=` parameters are present.
+- With `-v`: also prints the full URL and p/c values (single-use card
+  outputs, not key material — safe for testing).
+
+### End-to-end test procedure (no hardware required)
+
+This procedure exercises the full setup → verify → replay-check pipeline
+using known BoltCard test vectors:
+
+```sh
+# 1. Register a card in the policy config
+#
+# Option A: Bolt Card with per-card issuer key
+./ntag424_setup \
+    -u alice \
+    --uid 04996c6a926980 \
+    --issuer-key 00000000000000000000000000000001 \
+    -c   /tmp/test-ntag424.conf
+
+# Option B: Explicit per-card keys
+./ntag424_setup \
+    -u alice \
+    --uid 04996c6a926980 \
+    --k1  0c3b25d92b38ae443229dd59ad34b85d \
+    --k2  b45775776cb224c75bcde7ca3704e933 \
+    -c   /tmp/test-ntag424.conf
+
+# Option C: Use global defaults (requires [defaults] in config)
+# First manually add [defaults] to the config, then:
+./ntag424_setup \
+    -u alice \
+    --uid 04996c6a926980 \
+    --use-defaults \
+    -c   /tmp/test-ntag424.conf
+
+# 2. Verify authentication (BoltCard test vector 1, counter=3)
+./ntag424_authcheck \
+    -u alice \
+    -c /tmp/test-ntag424.conf \
+    -d /tmp/test-ntag424-replay.db \
+    --url "https://x.test?p=4E2E289D945A66BB13377A728884E867&c=E19CCB1FED8892CE"
+# → AUTH OK
+
+# 3. Verify replay rejection (same URL / same counter)
+./ntag424_authcheck \
+    -u alice \
+    -c /tmp/test-ntag424.conf \
+    -d /tmp/test-ntag424-replay.db \
+    --url "https://x.test?p=4E2E289D945A66BB13377A728884E867&c=E19CCB1FED8892CE"
+# → AUTH FAILED: counter not strictly increasing (replay detected)
+
+# Cleanup
+rm -f /tmp/test-ntag424.conf /tmp/test-ntag424-replay.db
+```
+
+### Hardware-validated
+
+Tested on real hardware: ACS ACR1252 reader, Bolt Card with NTAG424 DNA,
+deterministic key derivation (IssuerKey `0x00..01`, Version 1), `pcscd`.
+
+| Test | Result |
+|------|--------|
+| Card read via PC/SC | ✅ NDEF 88 bytes |
+| URL + p/c extraction | ✅ `lnurlw://...?p=...&c=...` |
+| Crypto verification (decrypt p, verify CMAC c) | ✅ |
+| Replay rejection (same counter) | ✅ |
+| Counter increment across taps | ✅ |
+| Full PAM auth (`pam_test boltcard-login boltcard`) | ✅ |
+| Replay rejection through PAM | ✅ |
+
+### How to test with real hardware
+
+**Prerequisites**: pcscd, NFC reader, NTAG424 DNA card (e.g. Bolt Card).
+
+```sh
+# 1. Read what the card produces
+./ntag424_testread -v
+
+# 2. Register the card — choose one:
+
+# Option A: Bolt Card with deterministic key derivation (recommended)
+sudo ntag424_setup \
+    -u <username> \
+    --uid <uid> \
+    --issuer-key <32-hex-char-issuer-key> \
+    -c /etc/ntag424.conf
+
+# Option B: Explicit per-card keys
+sudo ntag424_setup \
+    -u <username> \
+    --uid <uid> \
+    --k1  <k1-32hex> \
+    --k2  <k2-32hex> \
+    -c /etc/ntag424.conf
+
+# Option C: Rely on [defaults] (add [defaults] section to config first)
+sudo ntag424_setup \
+    -u <username> \
+    --uid <uid> \
+    --use-defaults \
+    -c /etc/ntag424.conf
+
+# 3. Secure the config (contains key material — MUST be root-only)
+sudo chmod 600 /etc/ntag424.conf
+sudo chown root:root /etc/ntag424.conf
+
+# 4. Create an isolated PAM service (does not affect system config)
+sudo tee /etc/pam.d/boltcard-login << 'EOF'
+auth    required    pam_pcsc_cr.so \
+    backend=ntag424 \
+    ntag424_config=/etc/ntag424.conf \
+    ntag424_db=/var/lib/ntag424/replay.db \
+    cue timeout=5
+account required    pam_permit.so
+EOF
+
+# 5. Test auth (card must be on reader)
+sudo make install
+sudo ./pam_test boltcard-login <username>
+
+# 6. For a live demo: auth + drop to shell
+sudo ./pam_test -s boltcard-login <username>
+```
+
+### Security notes
+
+- `/etc/ntag424.conf` contains K1/K2 key material and **must** be `root:root` mode `0600`.
+- `/var/lib/ntag424/replay.db` should be `root:root` mode `0600`.
+- Both `--issuer-key` and explicit `--k1`/`--k2` are supported. Use `--issuer-key`
+  for Bolt Cards deployed with the standard deterministic key derivation.
+
+### Still TODO
+
+- Packaging (RPM/deb).
+
+------------------------------------------------------------------------
+
 ## Theory of Challenge-Response Authentication
 
 There are two ways to do challenge-response authentication: with shared
@@ -72,7 +343,7 @@ the expected response is used to encrypt the secret again. This next
 expected response is not transferred over the air, and the shared secret
 stays in unencrypted form in the RAM (unless paged out) for a very short
 period. The downside is that if the token is used against multiple
-hosts, and the secret is leakd from one of them, all the hosts are now
+hosts, and the secret is leaked from one of them, all the hosts are now
 compromised. This is not the case with the first approach.
 
 The particular data structure is outlined in the picture:
@@ -146,7 +417,5 @@ the git repo.
 
 ## Author
 
-Eugene Crosser \<crosser at average dot org\>   
+Eugene Crosser \<crosser at average dot org\>
 <http://www.average.org/~crosser/>
-
----
