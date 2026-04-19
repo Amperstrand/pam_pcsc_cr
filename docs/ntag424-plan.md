@@ -242,6 +242,9 @@
 
 ## Known blockers / uncertainty
 
-- Current upstream tree is not fully green in this environment before NTAG changes (pre-existing compile failures in unrelated legacy files: `reader.h` missing `<stdint.h>`, `pcsc_cr.c` missing `SCARD_ATTR_ATR_STRING`).
-- Milestone 1 therefore includes standalone verifier tests; full tree green-up may require a dedicated baseline-fix pass before later milestones.
-- Full PAM integration tests require a live pcscd daemon and a configured NTAG424 card; these must be validated manually with real hardware.
+- Pre-existing legacy compile failures (`reader.h` missing `<stdint.h>`,
+  `pcsc_cr.c` `SCARD_ATTR_ATR_STRING` resolution, `authfile.c` GCC
+  stringop-overflow) have been fixed during the stabilization pass.
+  The full tree now builds clean with `-Werror` and all tests pass.
+- Full PAM integration tests require a live pcscd daemon and a configured
+  NTAG424 card; these must be validated manually with real hardware.
