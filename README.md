@@ -132,20 +132,23 @@ user = alice                # PAM username
 - NTAG424 mode is selected by adding `backend=ntag424` to the PAM module
   arguments. The legacy YubiKey/HMAC-SHA1 path remains entirely unchanged
   and is the default.
-- New module arguments: `ntag424_config=`, `ntag424_db=`, `ntag424_reader=`.
+- New module arguments: `ntag424_config=`, `ntag424_db=`, `ntag424_reader=`,
+  `cue`, `timeout=N`.
 - See `pam_pcsc_cr.8` for full documentation.
 
-Example PAM configuration (`/etc/pam.d/login`):
+Example PAM configuration — card as second factor with password fallback:
 
 ```
-# 1) Password authentication first
-auth   required   pam_unix.so
+# NTAG424 card auth (sufficient = skip password if card passes)
+auth  [success=ignore default=1]  pam_succeed_if.so user = someuser quiet
+auth  sufficient  pam_pcsc_cr.so  \
+         backend=ntag424            \
+         ntag424_config=/etc/ntag424.conf \
+         ntag424_db=/var/lib/ntag424/replay.db \
+         cue timeout=5
 
-# 2) NTAG424 NFC card as second factor
-auth   required   pam_pcsc_cr.so               \
-         backend=ntag424                        \
-         ntag424_config=/etc/ntag424.conf       \
-         ntag424_db=/var/lib/ntag424/replay.db
+# Password fallback (reached if card auth fails or skips)
+auth  required  pam_unix.so
 ```
 
 **Non-PAM end-to-end harness** (`ntag424_authcheck`, `noinst_PROGRAMS`):

@@ -91,6 +91,20 @@ is used.
 (case-sensitive).
 If omitted, the first available reader is used.
 .PP
+.B cue
+\- display a "Tap your NFC card on the reader..." prompt via PAM_TEXT_INFO
+before waiting for the card, and show the card label, counter, and UID
+on successful authentication (NTAG424 backend only).
+.PP
+.B timeout=<seconds>
+\- wait up to this many seconds for a card to appear on the reader
+before failing (NTAG424 backend only).
+When used with
+.B sufficient
+in the PAM stack, a timeout falls through to the next module
+(e.g. pam_unix password prompt).
+Default is 0 (immediate, no wait).
+.PP
 .B backend:key=value
 \- option specific to the crypto-token (legacy backend only).
 At present, only Yubikey Neo crypto-token is supported, and the only
