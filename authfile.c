@@ -147,10 +147,14 @@ struct _auth_obj authfile(const char *userid, const char *password,
 	snprintf(nfn, fnl+32, "%s.%d.%ld", fn, (int)getpid(), (long)time(NULL));
 	fp = fopen(fn, "r");
 	if (fp) {
+		int filesz;
 		if (fstat(fileno(fp), &st)) st.st_size = 2047;
+		if (st.st_size < 0) st.st_size = 0;
 		if (st.st_size > 2047) st.st_size = 2047;
-		buf = alloca(st.st_size + 1);
-		if (!fgets(buf, st.st_size + 1, fp)) {
+		filesz = (int)st.st_size + 1;
+		if (filesz <= 0) filesz = 1;
+		buf = alloca(filesz);
+		if (!fgets(buf, filesz, fp)) {
 			ret.err = strerror(errno);
 		} else if (parse(buf, sizeof(w)/sizeof(char*),
 					(const char ** const)&w)){
