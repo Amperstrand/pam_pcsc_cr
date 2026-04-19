@@ -164,5 +164,65 @@ auth   required   pam_pcsc_cr.so  \\
 2013 Eugene G. Crosser
 .br
 Released under zlib Open Source license.
-.SH SEE ALSO
-.BR pam "(3), " ykpersonalize "(1), " pam_cr_setup "(8)"
+.SH "SEE ALSO"
+.BR ntag424_setup "(1)"
+.SH NAME
+ntag424_setup \- Register NTAG424 DNA NFC cards in the policy config
+.SH SYNOPSIS
+.B ntag424_setup
+\-u \fIuser\fR \-\-uid \fIhex\fR \-\-k1 \fIhex\fR \-\-k2 \fIhex\fR
+[\fIoptions\fR]
+.SH DESCRIPTION
+.B ntag424_setup
+registers an NTAG424 DNA NFC card (typically a Bolt Card deployment)
+in the policy configuration file used by
+.BR pam_pcsc_cr (8).
+The card is assumed to already be deployed with known keys.
+.SH OPTIONS
+.TP
+.BI \-u " user"
+PAM username to associate with this card (required).
+.TP
+.BI \-\-uid " hex"
+7-byte card UID as 14 hex characters (required).
+.TP
+.BI \-\-k1 " hex"
+SDM decryption key (K1) as 32 hex characters (required).
+.TP
+.BI \-\-k2 " hex"
+CMAC verification key (K2) as 32 hex characters (required).
+.TP
+.BI \-c " path"
+Path to the policy configuration file.
+If omitted, defaults to
+.BR /etc/ntag424.conf .
+The file is created if it does not exist.
+.TP
+.BI \-\-id " label"
+Card section label in the config file.
+If omitted, auto-generated as \fBcard-<user>-<uid>\fR.
+.TP
+.B \-\-force
+Overwrite an existing card entry with the same ID.
+Without this flag, duplicate card IDs cause an error.
+.TP
+.B \-h
+Show usage help and exit.
+.SH EXAMPLES
+Register a card for user alice:
+.sp
+.nf
+ntag424_setup \\
+    \-u alice \\
+    \-\-uid 04996c6a926980 \\
+    \-\-k1  0c3b25d92b38ae443229dd59ad34b85d \\
+    \-\-k2  b45775776cb224c75bcde7ca3704e933 \\
+    \-c   /etc/ntag424.conf
+.fi
+.sp
+.SH COPYRIGHT
+2013 Eugene G. Crosser
+.br
+Released under zlib Open Source license.
+.SH "SEE ALSO"
+.BR pam_pcsc_cr "(8), " pam_cr_setup "(8)"

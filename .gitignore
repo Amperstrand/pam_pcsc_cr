@@ -36,4 +36,12 @@ test_crypto
 test_serial
 test_auth
 test_base64
+test_ntag424_verifier
+test_ntag424_reader
+test_ntag424_policy
+test_ntag424_replay
+test_ntag424_pam_glue
 pam_cr_setup
+ntag424_setup
+ntag424_testread
+ntag424_authcheck
