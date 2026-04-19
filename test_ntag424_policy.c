@@ -20,6 +20,7 @@
 
 #include "ntag424_policy.h"
 #include "ntag424_verifier.h"
+#include "crypto.h"
 
 /* ── test harness ────────────────────────────────────────────────────────── */
 
@@ -1502,6 +1503,333 @@ static void test_add_roundtrip_hex(void)
 }
 
 /* ============================================================
+ * J. URL construction helper + three-config equivalence tests
+ * ========================================================== */
+
+/*
+ * Construct a valid NTAG424 SUN URL from K1, K2, UID, and counter.
+ *
+ * Plaintext format (16 bytes, AES-ECB encrypted with K1 to produce p):
+ *   [0]    = 0xC7 (PICC data tag)
+ *   [1..7] = UID (7 bytes)
+ *   [8]    = counter & 0xFF       (LE24 low)
+ *   [9]    = (counter >> 8) & 0xFF
+ *   [10]   = (counter >> 16) & 0xFF
+ *   [11..15] = 0x00 (padding)
+ *
+ * CMAC c is computed via ntag424_sv2_and_ct (odd-indexed bytes).
+ */
+static int build_url(const uint8_t k1[NTAG424_KEY_BYTES],
+		     const uint8_t k2[NTAG424_KEY_BYTES],
+		     const uint8_t uid[NTAG424_UID_BYTES],
+		     uint32_t counter,
+		     char *url_out, size_t url_size)
+{
+	uint8_t plain[16];
+	uint8_t p_bytes[16];
+	uint8_t counter_be[3];
+	uint8_t sv2[16], ks[16], cm[16], ct[8];
+	size_t i;
+
+	memset(plain, 0, sizeof(plain));
+	plain[0] = 0xC7;
+	memcpy(plain + 1, uid, NTAG424_UID_BYTES);
+	plain[8]  = (uint8_t)(counter);
+	plain[9]  = (uint8_t)(counter >> 8);
+	plain[10] = (uint8_t)(counter >> 16);
+
+	if (!crypto_init(0))
+		return -1;
+	if (encrypt(k1, 16, plain, p_bytes, 16))
+		return -1;
+
+	counter_be[0] = (uint8_t)(counter >> 16);
+	counter_be[1] = (uint8_t)(counter >> 8);
+	counter_be[2] = (uint8_t)(counter);
+
+	if (ntag424_sv2_and_ct(uid, counter_be, k2,
+			       sv2, ks, cm, ct) != NTAG424_VERIFY_OK)
+		return -1;
+
+	{
+		char p_hex[33];
+		char c_hex[17];
+		for (i = 0; i < 16; i++)
+			snprintf(p_hex + i * 2, 3, "%02X", (unsigned)p_bytes[i]);
+		for (i = 0; i < 8; i++)
+			snprintf(c_hex + i * 2, 3, "%02X", (unsigned)ct[i]);
+		snprintf(url_out, url_size,
+			 "https://x.test?p=%s&c=%s", p_hex, c_hex);
+	}
+	return 0;
+}
+
+/*
+ * Three-config equivalence test:
+ *   Config A: explicit k1/k2
+ *   Config B: per-card issuer_key (derives same k1/k2)
+ *   Config C: global [defaults] issuer_key (derives same k1/k2)
+ * All three must produce identical auth results for the same URL.
+ */
+static void test_three_config_equivalence(void)
+{
+	char path_a[64], path_b[64], path_c[64];
+	struct ntag424_policy *pa = NULL, *pb = NULL, *pc = NULL;
+	struct ntag424_verify_result ra, rb, rc;
+	const struct ntag424_card_entry *ca = NULL, *cb = NULL, *cc = NULL;
+	ntag424_policy_status_t rca, rcb, rcc;
+
+	uint8_t ik[NTAG424_KEY_BYTES];
+	uint8_t uid[NTAG424_UID_BYTES];
+	uint8_t derived_k1[NTAG424_KEY_BYTES];
+	uint8_t derived_k2[NTAG424_KEY_BYTES];
+	char url[256];
+
+	parse_hex(HW_ISSUER_KEY, ik, NTAG424_KEY_BYTES);
+	parse_hex(HW_UID, uid, NTAG424_UID_BYTES);
+
+	ASSERT("equiv_derive",
+	       ntag424_derive_keys(ik, uid, 1, derived_k1, derived_k2)
+	       == NTAG424_VERIFY_OK);
+
+	if (build_url(derived_k1, derived_k2, uid, 42,
+		      url, sizeof(url)) != 0) {
+		printf("SKIP: test_three_config_equivalence (url build)\n"); return;
+	}
+
+	/* Config A: explicit k1/k2 */
+	{
+		static const char cfg_a[] =
+			"[card:hw]\n"
+			"uid  = " HW_UID "\n"
+			"k1   = " HW_K1 "\n"
+			"k2   = " HW_K2 "\n"
+			"user = testuser\n";
+		if (write_temp_config(cfg_a, path_a, sizeof(path_a)) != 0) {
+			printf("SKIP: test_three_config_equivalence (cfg_a)\n"); return;
+		}
+	}
+
+	/* Config B: per-card issuer_key */
+	{
+		static const char cfg_b[] =
+			"[card:hw]\n"
+			"uid        = " HW_UID "\n"
+			"issuer_key = " HW_ISSUER_KEY "\n"
+			"user       = testuser\n";
+		if (write_temp_config(cfg_b, path_b, sizeof(path_b)) != 0) {
+			printf("SKIP: test_three_config_equivalence (cfg_b)\n"); return;
+		}
+	}
+
+	/* Config C: global [defaults] issuer_key */
+	{
+		static const char cfg_c[] =
+			"[defaults]\n"
+			"issuer_key = " HW_ISSUER_KEY "\n"
+			"\n"
+			"[card:hw]\n"
+			"uid  = " HW_UID "\n"
+			"user = testuser\n";
+		if (write_temp_config(cfg_c, path_c, sizeof(path_c)) != 0) {
+			printf("SKIP: test_three_config_equivalence (cfg_c)\n"); return;
+		}
+	}
+
+	ntag424_policy_load(path_a, &pa); unlink(path_a);
+	ntag424_policy_load(path_b, &pb); unlink(path_b);
+	ntag424_policy_load(path_c, &pc); unlink(path_c);
+
+	if (!pa || !pb || !pc) {
+		printf("SKIP: test_three_config_equivalence (load)\n");
+		ntag424_policy_free(pa); ntag424_policy_free(pb); ntag424_policy_free(pc);
+		return;
+	}
+
+	memset(&ra, 0, sizeof(ra)); memset(&rb, 0, sizeof(rb)); memset(&rc, 0, sizeof(rc));
+
+	rca = ntag424_policy_try_verify(pa, "testuser", url, &ra, &ca);
+	rcb = ntag424_policy_try_verify(pb, "testuser", url, &rb, &cb);
+	rcc = ntag424_policy_try_verify(pc, "testuser", url, &rc, &cc);
+
+	ASSERT("equiv_a_ok", rca == NTAG424_POLICY_OK);
+	ASSERT("equiv_b_ok", rcb == NTAG424_POLICY_OK);
+	ASSERT("equiv_c_ok", rcc == NTAG424_POLICY_OK);
+
+	ASSERT("equiv_counter_a", ra.counter_value == 42);
+	ASSERT("equiv_counter_b", rb.counter_value == 42);
+	ASSERT("equiv_counter_c", rc.counter_value == 42);
+
+	ASSERT("equiv_uid_a",
+	       memcmp(ra.uid, uid, NTAG424_UID_BYTES) == 0);
+	ASSERT("equiv_uid_b",
+	       memcmp(rb.uid, uid, NTAG424_UID_BYTES) == 0);
+	ASSERT("equiv_uid_c",
+	       memcmp(rc.uid, uid, NTAG424_UID_BYTES) == 0);
+
+	ASSERT("equiv_counters_match",
+	       ra.counter_value == rb.counter_value &&
+	       rb.counter_value == rc.counter_value);
+
+	ntag424_policy_free(pa);
+	ntag424_policy_free(pb);
+	ntag424_policy_free(pc);
+}
+
+/*
+ * Verify the Bolt Card derivation test vectors from the spec.
+ * IK=00..01, UID=04bd60fa967380, Version=1
+ * K1=55da174c9608993dc27bb3f30a4a7314
+ * K2=e82327c7e2f27f2fd0361bacb4ac9d1e
+ *
+ * These come from the NXP NTAG424 DNA SUN specification and the
+ * Bolt Card protocol documentation.
+ */
+static void test_boltcard_derivation_vectors(void)
+{
+	uint8_t ik[NTAG424_KEY_BYTES];
+	uint8_t uid[NTAG424_UID_BYTES];
+	uint8_t k1[NTAG424_KEY_BYTES];
+	uint8_t k2[NTAG424_KEY_BYTES];
+	uint8_t expected_k1[NTAG424_KEY_BYTES];
+	uint8_t expected_k2[NTAG424_KEY_BYTES];
+
+	parse_hex("00000000000000000000000000000001", ik, NTAG424_KEY_BYTES);
+	parse_hex("04bd60fa967380", uid, NTAG424_UID_BYTES);
+	parse_hex("55da174c9608993dc27bb3f30a4a7314", expected_k1, NTAG424_KEY_BYTES);
+	parse_hex("e82327c7e2f27f2fd0361bacb4ac9d1e", expected_k2, NTAG424_KEY_BYTES);
+
+	ASSERT("bolt_v1_derive_rc",
+	       ntag424_derive_keys(ik, uid, 1, k1, k2)
+	       == NTAG424_VERIFY_OK);
+	ASSERT("bolt_v1_k1",
+	       memcmp(k1, expected_k1, NTAG424_KEY_BYTES) == 0);
+	ASSERT("bolt_v1_k2",
+	       memcmp(k2, expected_k2, NTAG424_KEY_BYTES) == 0);
+}
+
+/*
+ * Verify that the standard test vector (UID=04996c6a926980) with
+ * explicit k1/k2 is consistent: the same URL works for all three
+ * config formats IF the keys are the same. We can't derive from
+ * an issuer key (unknown), but we can verify that explicit-key
+ * config and issuer_key-derived-key config produce the same result
+ * when the issuer key derivation matches the explicit keys.
+ */
+static void test_explicit_keys_match_derived_keys(void)
+{
+	uint8_t ik[NTAG424_KEY_BYTES];
+	uint8_t uid[NTAG424_UID_BYTES];
+	uint8_t derived_k1[NTAG424_KEY_BYTES];
+	uint8_t derived_k2[NTAG424_KEY_BYTES];
+	uint8_t expected_k1[NTAG424_KEY_BYTES];
+	uint8_t expected_k2[NTAG424_KEY_BYTES];
+
+	parse_hex(HW_ISSUER_KEY, ik, NTAG424_KEY_BYTES);
+	parse_hex(HW_UID, uid, NTAG424_UID_BYTES);
+	parse_hex(HW_K1, expected_k1, NTAG424_KEY_BYTES);
+	parse_hex(HW_K2, expected_k2, NTAG424_KEY_BYTES);
+
+	ASSERT("explicit_derive_rc",
+	       ntag424_derive_keys(ik, uid, 1, derived_k1, derived_k2)
+	       == NTAG424_VERIFY_OK);
+
+	ASSERT("explicit_k1_match_derived",
+	       memcmp(derived_k1, expected_k1, NTAG424_KEY_BYTES) == 0);
+	ASSERT("explicit_k2_match_derived",
+	       memcmp(derived_k2, expected_k2, NTAG424_KEY_BYTES) == 0);
+}
+
+/*
+ * Test derivation with version=0 (different derivation input).
+ */
+static void test_derivation_version_zero(void)
+{
+	uint8_t ik[NTAG424_KEY_BYTES];
+	uint8_t uid[NTAG424_UID_BYTES];
+	uint8_t k1_v0[NTAG424_KEY_BYTES];
+	uint8_t k2_v0[NTAG424_KEY_BYTES];
+	uint8_t k1_v1[NTAG424_KEY_BYTES];
+	uint8_t k2_v1[NTAG424_KEY_BYTES];
+
+	parse_hex(HW_ISSUER_KEY, ik, NTAG424_KEY_BYTES);
+	parse_hex(HW_UID, uid, NTAG424_UID_BYTES);
+
+	ASSERT("derive_v0_rc",
+	       ntag424_derive_keys(ik, uid, 0, k1_v0, k2_v0)
+	       == NTAG424_VERIFY_OK);
+	ASSERT("derive_v1_rc",
+	       ntag424_derive_keys(ik, uid, 1, k1_v1, k2_v1)
+	       == NTAG424_VERIFY_OK);
+
+	ASSERT("v0_k1_eq_v1_k1",
+	       memcmp(k1_v0, k1_v1, NTAG424_KEY_BYTES) == 0);
+	ASSERT("v0_k2_neq_v1_k2",
+	       memcmp(k2_v0, k2_v1, NTAG424_KEY_BYTES) != 0);
+}
+
+/*
+ * Test that the policy-level verification with derived keys
+ * produces the same counter and UID as explicit-key verification.
+ */
+static void test_policy_derived_matches_explicit_verification(void)
+{
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	struct ntag424_verify_result result;
+	const struct ntag424_card_entry *card = NULL;
+	ntag424_policy_status_t rc;
+
+	uint8_t ik[NTAG424_KEY_BYTES];
+	uint8_t uid[NTAG424_UID_BYTES];
+	uint8_t k1[NTAG424_KEY_BYTES];
+	uint8_t k2[NTAG424_KEY_BYTES];
+	char url[256];
+
+	parse_hex(HW_ISSUER_KEY, ik, NTAG424_KEY_BYTES);
+	parse_hex(HW_UID, uid, NTAG424_UID_BYTES);
+	ntag424_derive_keys(ik, uid, 1, k1, k2);
+
+	if (build_url(k1, k2, uid, 99, url, sizeof(url)) != 0) {
+		printf("SKIP: test_policy_derived_matches_explicit (url)\n"); return;
+	}
+
+	/* Verify directly with ntag424_verify_from_url first */
+	{
+		struct ntag424_verify_result direct;
+		memset(&direct, 0, sizeof(direct));
+		ASSERT("direct_verify",
+		       ntag424_verify_from_url(url, k1, k2, &direct)
+		       == NTAG424_VERIFY_OK);
+		ASSERT("direct_counter", direct.counter_value == 99);
+	}
+
+	/* Now verify via policy with per-card issuer_key */
+	{
+		static const char cfg[] =
+			"[card:hw]\n"
+			"uid        = " HW_UID "\n"
+			"issuer_key = " HW_ISSUER_KEY "\n"
+			"user       = testuser\n";
+		if (write_temp_config(cfg, path, sizeof(path)) != 0) {
+			printf("SKIP: test_policy_derived_matches_explicit\n"); return;
+		}
+	}
+	ntag424_policy_load(path, &p);
+	unlink(path);
+	if (!p) { printf("SKIP: test_policy_derived_matches_explicit (load)\n"); return; }
+
+	memset(&result, 0, sizeof(result));
+	rc = ntag424_policy_try_verify(p, "testuser", url, &result, &card);
+	ASSERT("policy_derived_rc", rc == NTAG424_POLICY_OK);
+	ASSERT("policy_derived_counter", result.counter_value == 99);
+	ASSERT("policy_derived_uid",
+	       memcmp(result.uid, uid, NTAG424_UID_BYTES) == 0);
+
+	ntag424_policy_free(p);
+}
+
+/* ============================================================
  * main
  * ========================================================== */
 
@@ -1574,6 +1902,13 @@ int main(void)
 	test_add_to_malformed_file();
 	test_add_preserves_existing();
 	test_add_roundtrip_hex();
+
+	/* J: Equivalence + derivation vectors */
+	test_three_config_equivalence();
+	test_boltcard_derivation_vectors();
+	test_explicit_keys_match_derived_keys();
+	test_derivation_version_zero();
+	test_policy_derived_matches_explicit_verification();
 
 	if (tests_run == tests_passed) {
 		printf("PASS: %d/%d tests\n", tests_passed, tests_run);
