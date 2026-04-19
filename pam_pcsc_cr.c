@@ -34,6 +34,7 @@ freely, subject to the following restrictions:
 #include "authobj.h"
 #include "authfile.h"
 #include "pcsc_cr.h"
+#include "ntag424_pam_glue.h"
 
 #ifndef PIC
 # define PAM_STATIC
@@ -59,10 +60,24 @@ freely, subject to the following restrictions:
 # endif
 #endif
 
-struct _cfg {
-	int noaskpass;
-	int verbose;
-	int injectauth;
+/* Backend selection */
+typedef enum {
+	BACKEND_LEGACY  = 0,  /* original HMAC-SHA1 / YubiKey path (default) */
+	BACKEND_NTAG424 = 1   /* NTAG424 DNA card second-factor path */
+} _backend_t;
+
+	struct _cfg {
+	int        noaskpass;
+	int        verbose;
+	int        injectauth;
+	_backend_t backend;
+
+	/* NTAG424 options — only meaningful when backend == BACKEND_NTAG424 */
+	const char *ntag424_config;   /* path to policy config file */
+	const char *ntag424_db;       /* path to SQLite replay DB */
+	const char *ntag424_reader;   /* reader name substring (NULL = first) */
+	int        cue;               /* show "tap card" prompt */
+	unsigned int ntag424_timeout;  /* seconds to wait for card (0 = immediate) */
 };
 
 #ifndef HAVE_PAM_GET_AUTHTOK
@@ -145,6 +160,25 @@ void parse_cfg(struct _cfg * const cfg, int argc, const char *argv[])
 		else if (!strcmp(argv[i], "injectauth")) cfg->injectauth = 1;
 		else if (!strncmp(argv[i], "path=", 5))
 					authfile_template(argv[i]+5);
+		/* NTAG424 backend selection and options */
+		else if (!strncmp(argv[i], "backend=", 8)) {
+			if (!strcmp(argv[i] + 8, "ntag424"))
+				cfg->backend = BACKEND_NTAG424;
+			else
+				syslog(LOG_ERR,
+				       "unknown backend value: \"%s\"",
+				       argv[i] + 8);
+		}
+		else if (!strncmp(argv[i], "ntag424_config=", 15))
+			cfg->ntag424_config = argv[i] + 15;
+		else if (!strncmp(argv[i], "ntag424_db=", 11))
+			cfg->ntag424_db = argv[i] + 11;
+		else if (!strncmp(argv[i], "ntag424_reader=", 15))
+			cfg->ntag424_reader = argv[i] + 15;
+		else if (!strcmp(argv[i], "cue"))
+			cfg->cue = 1;
+		else if (!strncmp(argv[i], "timeout=", 8))
+			cfg->ntag424_timeout = (unsigned int)atoi(argv[i] + 8);
 		else syslog(LOG_ERR, "unrecognized arg: \"%s\"", argv[i]);
 
 		if (cfg->verbose) syslog(LOG_DEBUG, "arg: \"%s\"", argv[i]);
@@ -157,8 +191,6 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 {
 	struct _cfg cfg = {0};
 	const char *user;
-	const char *password;
-	struct _auth_obj ao;
 	int pam_err;
 
 	parse_cfg(&cfg, argc, argv);
@@ -172,32 +204,75 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 	}
 	if (cfg.verbose) syslog(LOG_DEBUG, "user=\"%s\"", user?user:"<none>");
 
-	if (!cfg.noaskpass) {
-		if ((pam_err = pam_get_authtok(pamh, PAM_AUTHTOK,
-					(const char **)&password,
-					"Token password:"))) {
-			if (cfg.verbose) syslog(LOG_ERR,
-						"get_authtok failed: %s",
-						pam_strerror(pamh, pam_err));
-			return pam_err;
+	/* ── NTAG424 second-factor path ─────────────────────────────── */
+	if (cfg.backend == BACKEND_NTAG424) {
+		struct ntag424_auth_params params;
+		ntag424_auth_status_t rc;
+
+		if (!cfg.ntag424_config || !cfg.ntag424_db) {
+			syslog(LOG_ERR,
+			       "ntag424: backend=ntag424 requires "
+			       "ntag424_config= and ntag424_db= options");
+			return PAM_AUTH_ERR;
 		}
-	} else {
-		password = "";
+
+		memset(&params, 0, sizeof(params));
+		params.username     = user;
+		params.config_path  = cfg.ntag424_config;
+		params.db_path      = cfg.ntag424_db;
+		params.reader_substr = cfg.ntag424_reader; /* NULL ok */
+		params.verbose      = cfg.verbose;
+		params.cue          = cfg.cue;
+		params.timeout_ms   = cfg.ntag424_timeout * 1000;
+		params.pamh         = (void *)pamh;
+
+		rc = ntag424_auth_run(&params);
+		if (rc == NTAG424_AUTH_OK) {
+			if (cfg.verbose)
+				syslog(LOG_INFO,
+				       "ntag424: auth ok for user \"%s\"",
+				       user ? user : "<none>");
+			return PAM_SUCCESS;
+		}
+		syslog(LOG_NOTICE,
+		       "ntag424: auth failed for user \"%s\": %s",
+		       user ? user : "<none>",
+		       ntag424_auth_status_string(rc));
+		return PAM_AUTH_ERR;
 	}
 
-	ao = authfile(user, password, update_nonce,
-			NULL, (size_t)0, NULL, (size_t)0, token_key);
-	if (ao.err) {
-		if (cfg.verbose) syslog(LOG_INFO, "authfile: %s", ao.err);
-		return PAM_AUTH_ERR;
-	} else {
-		/* Just because we can. Probably not much use for that.      */
-		/* Userid written in authfile may differ from the login one. */
-		pam_set_item(pamh, PAM_USER, ao.data);
-		if (cfg.injectauth && ao.payload && ao.payload[0])
-			pam_set_item(pamh, PAM_AUTHTOK, ao.payload);
-		if (cfg.verbose) syslog(LOG_DEBUG, "authenticated");
-		return PAM_SUCCESS;
+	/* ── Legacy HMAC-SHA1 / YubiKey path ────────────────────────── */
+	{
+		const char *password;
+		struct _auth_obj ao;
+
+		if (!cfg.noaskpass) {
+			if ((pam_err = pam_get_authtok(pamh, PAM_AUTHTOK,
+						(const char **)&password,
+						"Token password:"))) {
+				if (cfg.verbose) syslog(LOG_ERR,
+							"get_authtok failed: %s",
+							pam_strerror(pamh, pam_err));
+				return pam_err;
+			}
+		} else {
+			password = "";
+		}
+
+		ao = authfile(user, password, update_nonce,
+				NULL, (size_t)0, NULL, (size_t)0, token_key);
+		if (ao.err) {
+			if (cfg.verbose) syslog(LOG_INFO, "authfile: %s", ao.err);
+			return PAM_AUTH_ERR;
+		} else {
+			/* Just because we can. Probably not much use for that.      */
+			/* Userid written in authfile may differ from the login one. */
+			pam_set_item(pamh, PAM_USER, ao.data);
+			if (cfg.injectauth && ao.payload && ao.payload[0])
+				pam_set_item(pamh, PAM_AUTHTOK, ao.payload);
+			if (cfg.verbose) syslog(LOG_DEBUG, "authenticated");
+			return PAM_SUCCESS;
+		}
 	}
 }
 
