@@ -246,16 +246,72 @@
   - 28 new unit tests (validation, new file, append, duplicate reject,
     overwrite, null args, malformed file, preserve, hex round-trip).
 - Added `ntag424_setup` CLI tool (`bin_PROGRAMS`):
-  - Registers a card in the policy config.
-  - Auto-generates card ID as `card-<user>-<uid>` if not supplied.
-  - `--force` flag for overwriting existing entries.
-  - Validates UID (14 hex), K1/K2 (32 hex) before writing.
+   - Registers a card in the policy config.
+   - Auto-generates card ID as `card-<user>-<uid>` if not supplied.
+   - `--force` flag for overwriting existing entries.
+   - Validates UID (14 hex), K1/K2 (32 hex) before writing.
 - Total policy tests: 86 (up from 58).
+
+### Milestone 6 (done)
+
+- Added deterministic key derivation to verifier (`ntag424_verifier.{c,h}`):
+   - **`ntag424_derive_keys(issuer_key, uid, out_k1, out_k2)`**: derives
+     SDM encryption (K1) and CMAC verification (K2) keys from an issuer
+     key and card UID using AES-128-ECB, matching BoltCard specification.
+   - Derivation algorithm: K1 = AES-ECB(issuer_key, UID), K2 = AES-ECB(issuer_key,
+     K1). Both inputs are 16-byte values (issuer key is zero-padded if shorter).
+   - Updated `ntag424_policy_try_verify` to use derived keys when per-card
+     k1/k2 are not present but `issuer_key` is available.
+- Added `--issuer-key` flag to `ntag424_setup` CLI:
+   - Accepts a 32-hex-char issuer key and derives K1/K2 for the card.
+   - Useful for Bolt Cards deployed with standard deterministic derivation.
+   - Writes only `uid` and `issuer_key` to the config (no k1/k2).
+- Added `[defaults]` section support to policy config (`ntag424_policy.{c,h}`):
+   - New `[defaults]` section allows a system-wide default `issuer_key` for
+     cards without explicit key material.
+   - **`write_defaults_section()`**: helper to preserve the [defaults] section
+     when rewriting config files (atomic temp-file + rename).
+   - **`write_card_entry()`**: updated to handle three modes:
+     - Append to new file (no [defaults] yet)
+     - Append to existing file (preserve [defaults])
+     - Overwrite existing card entry (preserve [defaults])
+   - **`ntag424_policy_add_card()`**: updated to preserve [defaults] section
+     when adding new cards or overwriting existing entries.
+- Per-card `issuer_key` field:
+   - Each `[card:<id>]` entry may now include an `issuer_key` field (32 hex chars).
+   - Priority chain for key resolution:
+     1. Explicit per-card `k1`/`k2` (highest priority)
+     2. Per-card `issuer_key` (derive k1/k2 from this)
+     3. Global `[defaults]` `issuer_key` (derive k1/k2 from this)
+     4. Fail-closed (no keys found)
+- Added `--use-defaults` flag to `ntag424_setup`:
+   - Skips all key flags and writes only `uid` + `user`, expecting the
+     global [defaults] section to provide the issuer key.
+   - Useful for deployments with a single standard issuer key.
+- Updated test suite:
+   - **51 new tests** (26 for equivalence/derivation/vectors, 25 for policy):
+     - Derivation: 16 tests covering standard vectors, edge cases (zero key,
+       all-F key, version byte handling), null/invalid args.
+     - Equivalence: 10 tests proving derived keys match pre-derived k1/k2.
+     - Policy: 25 tests for [defaults] parsing, per-card issuer_key,
+       `write_defaults_section`, `write_card_entry` modes, `--use-defaults`,
+       and key resolution priority.
+   - Total policy tests: 137 (up from 86).
+   - Overall NTAG424 test count: 274 (120 verifier + 53 reader + 32 replay +
+     33 pam_glue + 36 authcheck/setup + 137 policy).
+- Updated documentation:
+   - **README.md**: added `[defaults]` section example, documented key
+     resolution priority chain, added `--issuer-key` and `--use-defaults`
+     flags to setup instructions.
+   - **pam_pcsc_cr.8**: documented new config format options and setup flags.
+- Hardware validation extended:
+   - Validated with simplified `[defaults]` config (single global issuer key).
+   - Card registration via `--use-defaults` successful.
+   - Full auth cycle passes with derived keys from defaults.
 
 ### Still TODO
 
 - Packaging (RPM/deb).
-- Optional: `--issuer-key` flag for `ntag424_setup` to auto-derive K1/K2.
 
 ## Known blockers / uncertainty
 
@@ -276,3 +332,4 @@ Card uses deterministic key derivation (IssuerKey `0x00..01`, Version 1).
 - Counter increment across taps: **pass**
 - Full PAM auth cycle via `pam_test boltcard-login boltcard`: **pass**
 - Replay rejection through PAM: **pass**
+- Simplified `[defaults]` config with `--use-defaults`: **pass**

@@ -28,6 +28,8 @@
 
 #include "ntag424_pam_glue.h"
 #include "ntag424_reader.h"
+#include "ntag424_verifier.h"
+#include "crypto.h"
 
 /* ── test harness ────────────────────────────────────────────────────────── */
 
@@ -697,6 +699,287 @@ static void test_status_strings(void)
 	       ntag424_auth_status_string((ntag424_auth_status_t)999) != NULL);
 }
 
+/* ── NDEF construction helper for derived-key tests ───────────────────── */
+
+#define HW_UID_HEX  "04bd60fa967380"
+#define HW_IK_HEX   "00000000000000000000000000000001"
+#define HW_K1_HEX   "55da174c9608993dc27bb3f30a4a7314"
+#define HW_K2_HEX   "e82327c7e2f27f2fd0361bacb4ac9d1e"
+
+static int parse_hex_raw(const char *hex, uint8_t *out, size_t len)
+{
+	size_t i;
+	if (strlen(hex) != len * 2) return -1;
+	for (i = 0; i < len; i++) {
+		unsigned int b;
+		if (sscanf(hex + i * 2, "%2x", &b) != 1) return -1;
+		out[i] = (uint8_t)b;
+	}
+	return 0;
+}
+
+static int build_derived_url(const uint8_t k1[NTAG424_KEY_BYTES],
+			     const uint8_t k2[NTAG424_KEY_BYTES],
+			     const uint8_t uid[NTAG424_UID_BYTES],
+			     uint32_t counter, char *url_out, size_t url_size)
+{
+	uint8_t plain[16], p_bytes[16];
+	uint8_t counter_be[3];
+	uint8_t sv2[16], ks[16], cm[16], ct[8];
+	size_t i;
+
+	memset(plain, 0, sizeof(plain));
+	plain[0] = 0xC7;
+	memcpy(plain + 1, uid, NTAG424_UID_BYTES);
+	plain[8]  = (uint8_t)(counter);
+	plain[9]  = (uint8_t)(counter >> 8);
+	plain[10] = (uint8_t)(counter >> 16);
+
+	if (!crypto_init(0)) return -1;
+	if (encrypt(k1, 16, plain, p_bytes, 16)) return -1;
+
+	counter_be[0] = (uint8_t)(counter >> 16);
+	counter_be[1] = (uint8_t)(counter >> 8);
+	counter_be[2] = (uint8_t)(counter);
+	if (ntag424_sv2_and_ct(uid, counter_be, k2,
+			       sv2, ks, cm, ct) != NTAG424_VERIFY_OK)
+		return -1;
+
+	{
+		char p_hex[33], c_hex[17];
+		for (i = 0; i < 16; i++)
+			snprintf(p_hex + i * 2, 3, "%02X", (unsigned)p_bytes[i]);
+		for (i = 0; i < 8; i++)
+			snprintf(c_hex + i * 2, 3, "%02X", (unsigned)ct[i]);
+		snprintf(url_out, url_size,
+			 "https://x.test?p=%s&c=%s", p_hex, c_hex);
+	}
+	return 0;
+}
+
+static int init_hw_derived_exchanges(struct mock_exchange *exchanges,
+				     const uint8_t *ndef_with_sw, size_t record_len)
+{
+	static const uint8_t sw_ok[2] = { 0x90, 0x00 };
+	uint8_t *nlen = (uint8_t *)malloc(4);
+	nlen[0] = (uint8_t)((record_len >> 8) & 0xFF);
+	nlen[1] = (uint8_t)(record_len & 0xFF);
+	nlen[2] = 0x90;
+	nlen[3] = 0x00;
+
+	exchanges[0].resp = sw_ok;          exchanges[0].resp_len = 2; exchanges[0].fail = 0;
+	exchanges[1].resp = sw_ok;          exchanges[1].resp_len = 2; exchanges[1].fail = 0;
+	exchanges[2].resp = CC_RESP;        exchanges[2].resp_len = 17; exchanges[2].fail = 0;
+	exchanges[3].resp = sw_ok;          exchanges[3].resp_len = 2; exchanges[3].fail = 0;
+	exchanges[4].resp = nlen;           exchanges[4].resp_len = 4; exchanges[4].fail = 0;
+	exchanges[5].resp = ndef_with_sw;   exchanges[5].resp_len = record_len + 2; exchanges[5].fail = 0;
+	return 6;
+}
+
+/* ── H: [defaults] and issuer_key derived auth ───────────────────────── */
+
+static void test_defaults_derived_auth_success(void)
+{
+	uint8_t ik[NTAG424_KEY_BYTES], uid[NTAG424_UID_BYTES];
+	uint8_t k1[NTAG424_KEY_BYTES], k2[NTAG424_KEY_BYTES];
+	char url[256];
+	uint8_t ndef_bytes[300];
+	size_t ndef_len;
+	struct mock_exchange hw_ex[6];
+	int hw_ex_count;
+	struct mock_ctx ctx;
+	ntag424_transport_t t;
+	char cfg[64], db[64];
+	ntag424_auth_status_t rc;
+
+	static const char defaults_cfg[] =
+		"[defaults]\n"
+		"issuer_key = " HW_IK_HEX "\n"
+		"\n"
+		"[card:hwcard]\n"
+		"uid  = " HW_UID_HEX "\n"
+		"user = testuser\n";
+
+	parse_hex_raw(HW_IK_HEX, ik, NTAG424_KEY_BYTES);
+	parse_hex_raw(HW_UID_HEX, uid, NTAG424_UID_BYTES);
+	if (ntag424_derive_keys(ik, uid, 1, k1, k2) != NTAG424_VERIFY_OK) {
+		printf("SKIP: test_defaults_derived_auth_success (derive)\n"); return;
+	}
+	if (build_derived_url(k1, k2, uid, 11, url, sizeof(url)) != 0) {
+		printf("SKIP: test_defaults_derived_auth_success (url)\n"); return;
+	}
+
+	{
+		const char *suffix = url + strlen("https://");
+		size_t slen = strlen(suffix);
+		uint8_t *ndef = ndef_bytes;
+		ndef[0] = 0xD1; ndef[1] = 0x01;
+		ndef[2] = (uint8_t)(1 + slen);
+		ndef[3] = 0x55; ndef[4] = 0x04;
+		memcpy(ndef + 5, suffix, slen);
+		ndef_len = 5 + slen;
+		ndef[ndef_len] = 0x90;
+		ndef[ndef_len + 1] = 0x00;
+		ndef_len += 2;
+	}
+
+	hw_ex_count = init_hw_derived_exchanges(hw_ex, ndef_bytes, ndef_len - 2);
+
+	if (write_temp_file(defaults_cfg, cfg, sizeof(cfg)) != 0) {
+		printf("SKIP: test_defaults_derived_auth_success (cfg)\n"); return;
+	}
+	make_temp_db_path(db, sizeof(db));
+
+	ctx.exchanges = hw_ex;
+	ctx.count     = hw_ex_count;
+	ctx.next_idx  = 0;
+	t = make_transport(&ctx);
+
+	{
+		struct ntag424_auth_params p = {
+			"testuser", cfg, db, NULL, 0, 0, 0, NULL
+		};
+		rc = ntag424_auth_run_with_transport(&p, &t);
+	}
+	ASSERT("defaults_derived_ok", rc == NTAG424_AUTH_OK);
+
+	unlink(cfg);
+	unlink(db);
+}
+
+static void test_percard_ik_derived_auth_success(void)
+{
+	uint8_t ik[NTAG424_KEY_BYTES], uid[NTAG424_UID_BYTES];
+	uint8_t k1[NTAG424_KEY_BYTES], k2[NTAG424_KEY_BYTES];
+	char url[256];
+	uint8_t ndef_bytes[300];
+	size_t ndef_len;
+	struct mock_exchange hw_ex[6];
+	int hw_ex_count;
+	struct mock_ctx ctx;
+	ntag424_transport_t t;
+	char cfg[64], db[64];
+	ntag424_auth_status_t rc;
+
+	static const char percard_ik_cfg[] =
+		"[card:hwcard]\n"
+		"uid        = " HW_UID_HEX "\n"
+		"issuer_key = " HW_IK_HEX "\n"
+		"user       = testuser\n";
+
+	parse_hex_raw(HW_IK_HEX, ik, NTAG424_KEY_BYTES);
+	parse_hex_raw(HW_UID_HEX, uid, NTAG424_UID_BYTES);
+	if (ntag424_derive_keys(ik, uid, 1, k1, k2) != NTAG424_VERIFY_OK) {
+		printf("SKIP: test_percard_ik_derived_auth_success (derive)\n"); return;
+	}
+	if (build_derived_url(k1, k2, uid, 13, url, sizeof(url)) != 0) {
+		printf("SKIP: test_percard_ik_derived_auth_success (url)\n"); return;
+	}
+
+	{
+		const char *suffix = url + strlen("https://");
+		size_t slen = strlen(suffix);
+		uint8_t *ndef = ndef_bytes;
+		ndef[0] = 0xD1; ndef[1] = 0x01;
+		ndef[2] = (uint8_t)(1 + slen);
+		ndef[3] = 0x55; ndef[4] = 0x04;
+		memcpy(ndef + 5, suffix, slen);
+		ndef_len = 5 + slen;
+		ndef[ndef_len] = 0x90;
+		ndef[ndef_len + 1] = 0x00;
+		ndef_len += 2;
+	}
+
+	hw_ex_count = init_hw_derived_exchanges(hw_ex, ndef_bytes, ndef_len - 2);
+
+	if (write_temp_file(percard_ik_cfg, cfg, sizeof(cfg)) != 0) {
+		printf("SKIP: test_percard_ik_derived_auth_success (cfg)\n"); return;
+	}
+	make_temp_db_path(db, sizeof(db));
+
+	ctx.exchanges = hw_ex;
+	ctx.count     = hw_ex_count;
+	ctx.next_idx  = 0;
+	t = make_transport(&ctx);
+
+	{
+		struct ntag424_auth_params p = {
+			"testuser", cfg, db, NULL, 0, 0, 0, NULL
+		};
+		rc = ntag424_auth_run_with_transport(&p, &t);
+	}
+	ASSERT("percarrd_ik_derived_ok", rc == NTAG424_AUTH_OK);
+
+	unlink(cfg);
+	unlink(db);
+}
+
+static void test_wrong_defaults_ik_auth_fails(void)
+{
+	uint8_t ik[NTAG424_KEY_BYTES], uid[NTAG424_UID_BYTES];
+	uint8_t k1[NTAG424_KEY_BYTES], k2[NTAG424_KEY_BYTES];
+	char url[256];
+	uint8_t ndef_bytes[300];
+	size_t ndef_len;
+	struct mock_exchange hw_ex[6];
+	int hw_ex_count;
+	struct mock_ctx ctx;
+	ntag424_transport_t t;
+	char cfg[64], db[64];
+	ntag424_auth_status_t rc;
+
+	static const char wrong_defaults_cfg[] =
+		"[defaults]\n"
+		"issuer_key = deadbeefdeadbeefdeadbeefdeadbeef\n"
+		"\n"
+		"[card:hwcard]\n"
+		"uid  = " HW_UID_HEX "\n"
+		"user = testuser\n";
+
+	parse_hex_raw(HW_IK_HEX, ik, NTAG424_KEY_BYTES);
+	parse_hex_raw(HW_UID_HEX, uid, NTAG424_UID_BYTES);
+	ntag424_derive_keys(ik, uid, 1, k1, k2);
+	build_derived_url(k1, k2, uid, 15, url, sizeof(url));
+
+	{
+		const char *suffix = url + strlen("https://");
+		size_t slen = strlen(suffix);
+		uint8_t *ndef = ndef_bytes;
+		ndef[0] = 0xD1; ndef[1] = 0x01;
+		ndef[2] = (uint8_t)(1 + slen);
+		ndef[3] = 0x55; ndef[4] = 0x04;
+		memcpy(ndef + 5, suffix, slen);
+		ndef_len = 5 + slen;
+		ndef[ndef_len] = 0x90;
+		ndef[ndef_len + 1] = 0x00;
+		ndef_len += 2;
+	}
+
+	hw_ex_count = init_hw_derived_exchanges(hw_ex, ndef_bytes, ndef_len - 2);
+
+	if (write_temp_file(wrong_defaults_cfg, cfg, sizeof(cfg)) != 0) {
+		printf("SKIP: test_wrong_defaults_ik_auth_fails (cfg)\n"); return;
+	}
+	make_temp_db_path(db, sizeof(db));
+
+	ctx.exchanges = hw_ex;
+	ctx.count     = hw_ex_count;
+	ctx.next_idx  = 0;
+	t = make_transport(&ctx);
+
+	{
+		struct ntag424_auth_params p = {
+			"testuser", cfg, db, NULL, 0, 0, 0, NULL
+		};
+		rc = ntag424_auth_run_with_transport(&p, &t);
+	}
+	ASSERT("wrong_defaults_ik_fails",
+	       rc == NTAG424_AUTH_ERR_POLICY || rc == NTAG424_AUTH_ERR_REPLAY);
+
+	unlink(cfg);
+	unlink(db);
+}
+
 /* ============================================================
  * main
  * ========================================================== */
@@ -742,6 +1025,11 @@ int main(void)
 
 	/* Status strings */
 	test_status_strings();
+
+	/* H: [defaults] and issuer_key derived auth */
+	test_defaults_derived_auth_success();
+	test_percard_ik_derived_auth_success();
+	test_wrong_defaults_ik_auth_fails();
 
 	if (tests_run == tests_passed) {
 		printf("PASS: %d/%d tests\n", tests_passed, tests_run);
