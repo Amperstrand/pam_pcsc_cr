@@ -203,15 +203,45 @@
     counter rejected, lower counter rejected, sequential increases, independent
     card IDs, state persistence across reopen, null/invalid args, invalid path
 
-### Milestone 4 (next)
+### Milestone 4 (done)
 
-- Wire verifier + reader + policy + replay into PAM as second factor after password.
+- Added thin PAM orchestration layer (`ntag424_pam_glue.{c,h}`):
+  - **`ntag424_auth_run`**: PC/SC backend entry point — opens reader, reads NDEF,
+    runs verifier, checks policy, updates replay DB.
+  - **`ntag424_auth_run_with_transport`**: testable entry point with injected
+    transport; all orchestration logic is shared with `ntag424_auth_run`.
+  - All errors fail closed; `NTAG424_AUTH_ERR_{ARGS,CONFIG,DB,READER,POLICY,REPLAY}`.
+  - Nothing logged contains URL, p/c values, or key material.
+- Modified `pam_pcsc_cr.c` — opt-in NTAG424 path:
+  - **`backend=ntag424`** module argument selects the NTAG424 path; legacy
+    HMAC-SHA1/YubiKey path is the default and remains entirely unchanged.
+  - New module arguments: `ntag424_config=<path>`, `ntag424_db=<path>`,
+    `ntag424_reader=<substring>`.
+  - `pam_sm_authenticate` dispatches to `ntag424_auth_run` when NTAG424 mode
+    is selected; the old authfile/token_key path is unreachable in that branch.
+- Updated `pam_pcsc_cr.8` man page:
+  - Documents all new module arguments.
+  - Includes example PAM stack with NTAG424 as second factor after `pam_unix`.
+  - Includes the config file format.
+- 33 new unit tests (`test_ntag424_pam_glue.c`, no hardware required):
+  - Null / invalid argument handling (5 tests).
+  - Config not found, invalid DB path, malformed config (3 tests).
+  - Reader / NDEF error paths via mock transport (2 tests).
+  - Full success path via mock transport + BoltCard test vector (1 test).
+  - Replay rejection after first acceptance — same NDEF / same counter (2 tests).
+  - Policy mismatch: wrong user, wrong keys, UID mismatch in config (3 tests).
+  - `parse_cfg` argument parsing: `backend=ntag424`, default legacy, NTAG424
+    options, reader substr default NULL (5 tests).
+  - Status string coverage (8 tests).
 
 ### Milestone 5 (next)
 
-- Documentation for setup, testing, and lockout recovery.
+- Enrollment / setup tooling: a tool or documented procedure to write the NTAG424
+  DNA keys to a card and add it to the policy config.
+- Hardening / polish: key derivation, lockout handling, logging review.
 
 ## Known blockers / uncertainty
 
 - Current upstream tree is not fully green in this environment before NTAG changes (pre-existing compile failures in unrelated legacy files: `reader.h` missing `<stdint.h>`, `pcsc_cr.c` missing `SCARD_ATTR_ATR_STRING`).
 - Milestone 1 therefore includes standalone verifier tests; full tree green-up may require a dedicated baseline-fix pass before later milestones.
+- Full PAM integration tests require a live pcscd daemon and a configured NTAG424 card; these must be validated manually with real hardware.

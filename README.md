@@ -48,9 +48,9 @@ you put it on the NFC reader.
 
 ## NTAG424 DNA second-factor work in progress
 
-The branch `copilot/implement-ntag424-support` is adding support for
+The branch `copilot/implement-ntag424-support` adds support for
 **NTAG424 DNA** (NFC Forum Type 4) cards as a local PAM second factor.
-This work is structured in milestones and is **not yet complete**.
+Milestones 1–4 are complete.
 
 ### Current status
 
@@ -60,7 +60,8 @@ This work is structured in milestones and is **not yet complete**.
 | Reader (PC/SC + NDEF) | `ntag424_reader.{c,h}` | ✅ done — 53 tests |
 | Config + policy | `ntag424_policy.{c,h}` | ✅ done — 58 tests |
 | Replay protection | `ntag424_replay.{c,h}` | ✅ done — 32 tests |
-| PAM integration | *(not started)* | ⏳ Milestone 4 |
+| PAM orchestration | `ntag424_pam_glue.{c,h}` | ✅ done — 33 tests |
+| PAM module integration | `pam_pcsc_cr.c` | ✅ done — opt-in via `backend=ntag424` |
 
 ### What exists now
 
@@ -117,9 +118,38 @@ user = alice                # PAM username
   all errors fail closed.
 - 32 unit tests using temp databases, no hardware required.
 
+**PAM orchestration layer** (`ntag424_pam_glue.{c,h}`):
+
+- Thin layer that composes reader + policy + replay into a single call.
+- `ntag424_auth_run`: PC/SC backend entry point.
+- `ntag424_auth_run_with_transport`: injectable transport for unit tests.
+- All errors fail closed; nothing logged contains URL, p/c, or key material.
+- 33 unit tests using mock APDU transport — no hardware required.
+
+**PAM module integration** (`pam_pcsc_cr.c`):
+
+- NTAG424 mode is selected by adding `backend=ntag424` to the PAM module
+  arguments. The legacy YubiKey/HMAC-SHA1 path remains entirely unchanged
+  and is the default.
+- New module arguments: `ntag424_config=`, `ntag424_db=`, `ntag424_reader=`.
+- See `pam_pcsc_cr.8` for full documentation.
+
+Example PAM configuration (`/etc/pam.d/login`):
+
+```
+# 1) Password authentication first
+auth   required   pam_unix.so
+
+# 2) NTAG424 NFC card as second factor
+auth   required   pam_pcsc_cr.so               \
+         backend=ntag424                        \
+         ntag424_config=/etc/ntag424.conf       \
+         ntag424_db=/var/lib/ntag424/replay.db
+```
+
 **Non-PAM end-to-end harness** (`ntag424_authcheck`, `noinst_PROGRAMS`):
 
-- Exercises the full Milestone 3 stack before PAM integration:
+- Exercises the full Milestone 3+ stack without PAM:
   `ntag424_authcheck -u <user> -c <config> -d <db> --url <url>`
 - Prints `AUTH OK` (exit 0) or `AUTH FAILED: <reason>` (exit 1).
 - Does **not** print URL, `p`, `c`, or key material.
@@ -129,11 +159,11 @@ user = alice                # PAM username
 - Connects to a real reader/card and prints NDEF length and whether
   `p=`/`c=` parameters are present. Does **not** print URL or key values.
 
-### Still TODO (PAM integration not available yet)
+### Still TODO
 
-- PAM module glue: `pam_sm_authenticate` calling reader + policy + replay.
-- Setup tool for initial card registration.
-- Config file permissions and packaging.
+- Enrollment / setup tooling: procedure or tool to write NTAG424 DNA keys
+  to a card and register it in the policy config (Milestone 5).
+- Hardening / polish: packaging, key derivation guidance, lockout handling.
 
 See `docs/ntag424-plan.md` for the full milestone plan.
 

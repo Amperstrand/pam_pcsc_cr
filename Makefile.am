@@ -8,12 +8,12 @@ DEFS = -DDEBUG_PAM -DPAM_DEBUG @DEFS@
 
 noinst_HEADERS = pcsc_cr.h token.h crypto_if.h crypto.h serial.h authobj.h \
 		authfile.h base64.h ntag424_verifier.h ntag424_reader.h \
-		ntag424_policy.h ntag424_replay.h
+		ntag424_policy.h ntag424_replay.h ntag424_pam_glue.h
 
 noinst_LTLIBRARIES = libpcsc_cr.la
 libpcsc_cr_la_SOURCES = authfile.c authobj.c serial.c crypto.c pcsc_cr.c \
 			ykneo.c base64.c ntag424_verifier.c ntag424_reader.c \
-			ntag424_policy.c ntag424_replay.c
+			ntag424_policy.c ntag424_replay.c ntag424_pam_glue.c
 EXTRA_libpcsc_cr_la_SOURCES = ossl_crypto.c tom_crypto.c gnu_crypto.c
 libpcsc_cr_la_LIBADD = @CRYPTO_OBJS@
 libpcsc_cr_la_DEPENDENCIES = @CRYPTO_OBJS@
@@ -30,7 +30,7 @@ man_MANS = pam_cr_setup.8 pam_pcsc_cr.8
 
 check_PROGRAMS = test_auth test_serial test_crypto test_chalresp test_base64 \
 		test_ntag424_verifier test_ntag424_reader \
-		test_ntag424_policy test_ntag424_replay
+		test_ntag424_policy test_ntag424_replay test_ntag424_pam_glue
 test_auth_LDADD = libpcsc_cr.la
 test_serial_LDADD = libpcsc_cr.la
 test_crypto_LDADD = libpcsc_cr.la
@@ -40,6 +40,7 @@ test_ntag424_verifier_LDADD = libpcsc_cr.la
 test_ntag424_reader_LDADD = libpcsc_cr.la
 test_ntag424_policy_LDADD = libpcsc_cr.la
 test_ntag424_replay_LDADD = libpcsc_cr.la
+test_ntag424_pam_glue_LDADD = libpcsc_cr.la
 
 # Manual test utilities — built but not run automatically.
 # ntag424_testread: requires a live pcscd daemon and an NTAG424 card.
@@ -53,7 +54,7 @@ EXTRA_DIST = autogen.sh README.md auth-data-structure.svg \
 
 TESTS = test_auth test_serial test_crypto test_chalresp test_base64 \
 	test_ntag424_verifier test_ntag424_reader \
-	test_ntag424_policy test_ntag424_replay
+	test_ntag424_policy test_ntag424_replay test_ntag424_pam_glue
 XFAIL_TESTS = test_chalresp
 
 html: README.html

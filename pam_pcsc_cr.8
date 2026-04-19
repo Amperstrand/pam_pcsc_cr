@@ -19,45 +19,102 @@
 .\"    3. This notice may not be removed or altered from any source
 .\"    distribution.
 .\"
-.TH PAM_PCSC_CR 8 "18 Dec 2013" PAM_PCSC_CR PAM_PCSC_CR
+.TH PAM_PCSC_CR 8 "Apr 2026" PAM_PCSC_CR PAM_PCSC_CR
 .SH NAME
-pam_pcsc_cr \- Module for challenge-response authentication
+pam_pcsc_cr \- Module for challenge-response and NTAG424 card authentication
 .SH SYNOPSYS
 .B pam_pcsc_cr.so [options]
 .SH DESCRIPTION
-This is a PAM module for crypto-token based authentication.
+This is a PAM module supporting two authentication backends selectable via the
+.B backend=
+option.
+.PP
+.B Legacy backend (default):
+Crypto-token based challenge-response authentication.
 It only provides authentication component, the rest are stubs.
 The module uses the contents of the auth file created with the
 .B pam_cr_setup
 command and optionally a password provided by the user to construct
-challenge that is sent to the crypto-token over
+a challenge that is sent to the crypto-token over the
 .B pcsclite
-framework. The token's response is used to decipher the encrypted part
-of the file. If decryption is successful, then the extracted shared
-secret is used to produce ithe expected response to the future
-(different) challenge, encrypted again with the expected response,
-and stowed into the file. Additional payload that was decrypted on
-the way is optionally injected into the PAM framework as AUTH_TOKEN
-to be later used by keyring-unlocking module.
+framework.
+.PP
+.B NTAG424 backend (backend=ntag424):
+NTAG424 DNA NFC card second-factor authentication.
+Reads an NFC Forum Type 4 NDEF message from a card over PC/SC,
+extracts the NTAG424 SUN URL, verifies the cryptographic signature
+using per-user key material from a config file, and enforces
+monotonic counter replay protection using a SQLite database.
+This backend is intended as a second factor after password authentication.
 .SH OPTIONS
 .B verbose
 \- write more error messages to syslog.
 .PP
 .B noaskpass
 \- do not try to ask the user for the challenge password, use empty
-string for the password.
+string for the password (legacy backend only).
 .PP
 .B injectauth
-\- inject payload as PAM_AUTHTOK for the benefit of subsequent PAM modules.
+\- inject payload as PAM_AUTHTOK for the benefit of subsequent PAM modules
+(legacy backend only).
 .PP
 .B path=<string>
-\- template used to find the file.
+\- template used to find the auth file (legacy backend only).
+.PP
+.B backend=ntag424
+\- select the NTAG424 DNA card second-factor backend.
+Requires
+.B ntag424_config=
+and
+.B ntag424_db=
+options.
+.PP
+.B ntag424_config=<path>
+\- path to the NTAG424 policy configuration file.
+The file maps PAM usernames to allowed cards with key material.
+See
+.B NTAG424 CONFIG FORMAT
+below.
+Required when
+.B backend=ntag424
+is used.
+.PP
+.B ntag424_db=<path>
+\- path to the SQLite database used for replay protection.
+The file is created automatically if it does not exist.
+Required when
+.B backend=ntag424
+is used.
+.PP
+.B ntag424_reader=<substring>
+\- select the PC/SC reader whose name contains this substring
+(case-sensitive).
+If omitted, the first available reader is used.
 .PP
 .B backend:key=value
-\- option specific to the crypto-token. At present, only Yubikey Neo
-crypto-token is supported, and the only option is
+\- option specific to the crypto-token (legacy backend only).
+At present, only Yubikey Neo crypto-token is supported, and the only
+option is
 .B ykneo:slot=[1|2].
-.PP
+.SH "NTAG424 CONFIG FORMAT"
+The NTAG424 policy configuration file uses a strict INI-like format.
+Each card is declared in a
+.B [card:<id>]
+section with four required fields:
+.sp
+.nf
+# Lines beginning with '#' are comments.
+# Each card entry:
+[card:boltcard-alice]
+uid  = 04996c6a926980       # 14 hex chars (7-byte UID)
+k1   = 0c3b25d92b38ae443229dd59ad34b85d   # 32 hex chars (AES-128)
+k2   = b45775776cb224c75bcde7ca3704e933   # 32 hex chars (AES-128)
+user = alice                # PAM username
+.fi
+.sp
+The parser fails closed: unknown keys, missing fields, malformed hex,
+or duplicate card IDs cause the config to be rejected entirely.
+Multiple cards may be configured in one file.
 .SH "MODULE TYPES PROVIDED"
 .PP
 All module types (\fBaccount\fR,
@@ -68,28 +125,44 @@ and
 .SH "RETURN VALUES"
 .PP
 PAM_SUCCESS on successful authentication, error indication otherwise.
-.RE
 .SH "EXAMPLES"
 .PP
-An example usage for
-/etc/pam\&.d/login
-would be:
+Legacy YubiKey / HMAC-SHA1 usage:
 .sp
-.if n \{\
-.RS 4
-.\}
 .nf
-# Authenticate the user
-auth       required   pam_pcsc_cr\&.so injectauth
-      
+# /etc/pam.d/login
+auth   required   pam_pcsc_cr.so injectauth
 .fi
-.if n \{\
-.RE
-.\}
 .sp
+.PP
+NTAG424 DNA card as a second factor after password authentication:
+.sp
+.nf
+# /etc/pam.d/login  (or ssh, sudo, etc.)
+
+# 1) Password authentication first
+auth   required   pam_unix.so
+
+# 2) NTAG424 NFC card as second factor
+auth   required   pam_pcsc_cr.so             \\
+         backend=ntag424                      \\
+         ntag424_config=/etc/ntag424.conf     \\
+         ntag424_db=/var/lib/ntag424/replay.db
+.fi
+.sp
+.PP
+With a specific reader substring match:
+.sp
+.nf
+auth   required   pam_pcsc_cr.so  \\
+         backend=ntag424           \\
+         ntag424_config=/etc/ntag424.conf \\
+         ntag424_db=/var/lib/ntag424/replay.db \\
+         ntag424_reader=ACR122
+.fi
 .SH COPYRIGHT
 2013 Eugene G. Crosser
 .br
 Released under zlib Open Source license.
 .SH SEE ALSO
-.BR pam "(3), "ykpersonalize "(1), "pam_cr_setup "(8)
+.BR pam "(3), " ykpersonalize "(1), " pam_cr_setup "(8)"
