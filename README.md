@@ -58,7 +58,8 @@ This work is structured in milestones and is **not yet complete**.
 |---|---|---|
 | Verifier (crypto) | `ntag424_verifier.{c,h}` | ✅ done — 120 tests |
 | Reader (PC/SC + NDEF) | `ntag424_reader.{c,h}` | ✅ done — 53 tests |
-| Config + replay | *(not started)* | ⏳ Milestone 3 |
+| Config + policy | `ntag424_policy.{c,h}` | ✅ done — 58 tests |
+| Replay protection | `ntag424_replay.{c,h}` | ✅ done — 32 tests |
 | PAM integration | *(not started)* | ⏳ Milestone 4 |
 
 ### What exists now
@@ -82,18 +83,57 @@ This work is structured in milestones and is **not yet complete**.
   is negotiated, not hardcoded.
 - 53 unit tests run with mock APDU responses — no hardware required.
 
-**Manual test utility** (`ntag424_testread`):
+**Config / policy layer** (`ntag424_policy.{c,h}`):
+
+- Parses a small, strict INI-like config file mapping card identities
+  (UID + K1/K2) to PAM usernames.
+- `ntag424_policy_load`: strict fail-closed parser; rejects any unknown
+  keys, missing required fields, malformed hex, or duplicate card IDs.
+- `ntag424_policy_lookup`: finds a card entry matching username + UID
+  using a constant-time UID comparison.
+- `ntag424_policy_try_verify`: iterates cards for a user, runs the full
+  crypto verifier with each card's keys, and checks the recovered UID
+  against the config — the single call from URL + username to verified
+  card identity.
+- 58 unit tests, no hardware required.
+
+Config format example (`/etc/ntag424.conf`, readable only by root):
+
+```ini
+# [card:<label>]  — one section per card
+[card:boltcard-alice]
+uid  = 04996c6a926980       # 7-byte card UID (14 hex chars)
+k1   = 0c3b25d92b38ae443229dd59ad34b85d   # SDM decryption key
+k2   = b45775776cb224c75bcde7ca3704e933   # CMAC verification key
+user = alice                # PAM username
+```
+
+**Replay protection** (`ntag424_replay.{c,h}`):
+
+- SQLite database (WAL mode) recording the last accepted SDM read counter
+  per card UID.
+- `ntag424_replay_check_and_update`: atomic `BEGIN IMMEDIATE` transaction;
+  accepts strictly-greater counters; rejects equal or lower (replay);
+  all errors fail closed.
+- 32 unit tests using temp databases, no hardware required.
+
+**Non-PAM end-to-end harness** (`ntag424_authcheck`, `noinst_PROGRAMS`):
+
+- Exercises the full Milestone 3 stack before PAM integration:
+  `ntag424_authcheck -u <user> -c <config> -d <db> --url <url>`
+- Prints `AUTH OK` (exit 0) or `AUTH FAILED: <reason>` (exit 1).
+- Does **not** print URL, `p`, `c`, or key material.
+
+**Manual NFC reader test utility** (`ntag424_testread`, `noinst_PROGRAMS`):
 
 - Connects to a real reader/card and prints NDEF length and whether
   `p=`/`c=` parameters are present. Does **not** print URL or key values.
 
 ### Still TODO (PAM integration not available yet)
 
-- Config file parser and per-user card binding.
-- SQLite-based replay protection (monotonic counter check).
-- PAM module glue: `pam_sm_authenticate` calling verifier + reader +
-  policy + replay.
+- PAM module glue: `pam_sm_authenticate` calling reader + policy + replay.
 - Setup tool for initial card registration.
+- Config file permissions and packaging.
 
 See `docs/ntag424-plan.md` for the full milestone plan.
 

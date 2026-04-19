@@ -115,5 +115,13 @@ AC_CHECK_HEADERS([winscard.h reader.h], [],
 AC_CHECK_LIB([pcsclite], [SCardEstablishContext], [],
   [AC_MSG_ERROR([[pcsclite library not useable]])])
 
+PKG_CHECK_MODULES([SQLITE3], [sqlite3],
+  [CPPFLAGS="$SQLITE3_CFLAGS $CPPFLAGS"
+   LIBS="$SQLITE3_LIBS $LIBS"],
+  [AC_CHECK_LIB([sqlite3], [sqlite3_open], [],
+    [AC_MSG_ERROR([[sqlite3 library not found (required for replay protection)]])])
+   AC_CHECK_HEADERS([sqlite3.h], [],
+    [AC_MSG_ERROR([[sqlite3 headers not found]])])])
+
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT

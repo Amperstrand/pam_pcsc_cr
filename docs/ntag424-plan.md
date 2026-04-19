@@ -161,9 +161,47 @@
   - End-to-end: reader output → `ntag424_extract_url_from_ndef` →
     `ntag424_extract_p_c` (all mock, no hardware)
 
-### Milestone 3 (next)
+### Milestone 3 (done)
 
-- Add local config parser + SQLite replay protection.
+- Added local config / policy layer (`ntag424_policy.{c,h}`):
+  - **Config format**: small strict INI-like file; `[card:<id>]` sections with
+    `uid`, `k1`, `k2`, `user` fields; unknown keys and malformed values cause
+    immediate rejection (fail-closed).
+  - **`ntag424_policy_load`**: strict line-by-line parser (max 511-char lines;
+    rejects: unknown section type, unknown key, missing required field,
+    duplicate card ID, malformed hex, wrong-length hex, line overflow).
+  - **`ntag424_policy_free`**: frees all parser state.
+  - **`ntag424_policy_lookup`**: finds a card entry matching *both* username
+    and UID (constant-time UID comparison to avoid timing sidechannels).
+  - **`ntag424_policy_try_verify`**: iterates all cards for a user, calls
+    `ntag424_verify_from_url` with each card's K1/K2, and checks the
+    recovered UID against the config UID — the single function needed to go
+    from URL + username to a verified card identity.
+- Added SQLite replay protection (`ntag424_replay.{c,h}`):
+  - **Schema**: `ntag424_replay(card_id TEXT PK, last_counter INTEGER,
+    updated_at INTEGER)`; created automatically on first open.
+  - **WAL mode** for crash safety and concurrent read robustness.
+  - **`ntag424_replay_open`**: opens (or creates) the DB, enables WAL, creates
+    schema.
+  - **`ntag424_replay_check_and_update`**: single `BEGIN IMMEDIATE` transaction;
+    inserts first-seen card; accepts strictly-greater counters; rejects equal
+    or lower; all errors fail closed.
+  - **`ntag424_replay_close`**: frees handle.
+- Added non-PAM end-to-end harness (`ntag424_authcheck.c`, `noinst_PROGRAMS`):
+  - `ntag424_authcheck -u <user> -c <config> -d <db> --url <url>`
+  - Runs: policy load → replay DB open → `ntag424_policy_try_verify` → replay
+    check+update → prints `AUTH OK` or `AUTH FAILED: <reason>`.
+  - Does NOT print sensitive URL, `p`, `c`, or key material.
+  - Exit code 0 = OK, 1 = auth failure, 2 = usage error.
+- 90 new unit tests (no hardware required):
+  - Policy: 58 tests — valid config (1/2 cards, comments, whitespace), all
+    missing-field combinations, unknown key, unknown section, kv outside
+    section, duplicate card_id, malformed hex, wrong-length hex, line too
+    long, lookup wrong user, lookup wrong uid, multi-card lookup, try_verify
+    success, wrong user, bad URL, wrong keys, UID mismatch in config, null args
+  - Replay: 32 tests — open/create, first use (counter 0 and non-zero), same
+    counter rejected, lower counter rejected, sequential increases, independent
+    card IDs, state persistence across reopen, null/invalid args, invalid path
 
 ### Milestone 4 (next)
 
@@ -175,5 +213,5 @@
 
 ## Known blockers / uncertainty
 
-- Current upstream tree is not fully green in this environment before NTAG changes (pre-existing compile failures in unrelated legacy files).
+- Current upstream tree is not fully green in this environment before NTAG changes (pre-existing compile failures in unrelated legacy files: `reader.h` missing `<stdint.h>`, `pcsc_cr.c` missing `SCARD_ATTR_ATR_STRING`).
 - Milestone 1 therefore includes standalone verifier tests; full tree green-up may require a dedicated baseline-fix pass before later milestones.
