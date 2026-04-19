@@ -254,8 +254,8 @@
 
 ### Still TODO
 
-- Hardening / polish: key derivation, lockout handling, logging review.
-- Real-hardware validation with live pcscd daemon and NTAG424 card.
+- Packaging (RPM/deb).
+- Optional: `--issuer-key` flag for `ntag424_setup` to auto-derive K1/K2.
 
 ## Known blockers / uncertainty
 
@@ -263,5 +263,16 @@
   `pcsc_cr.c` `SCARD_ATTR_ATR_STRING` resolution, `authfile.c` GCC
   stringop-overflow) have been fixed during the stabilization pass.
   The full tree now builds clean with `-Werror` and all tests pass.
-- Full PAM integration tests require a live pcscd daemon and a configured
-  NTAG424 card; these must be validated manually with real hardware.
+
+## Hardware validation (done)
+
+Tested with ACS ACR1252 USB reader, Bolt Card (NTAG424 DNA), pcscd on Ubuntu.
+Card uses deterministic key derivation (IssuerKey `0x00..01`, Version 1).
+
+- Card read → NDEF → URL → p/c extraction: **pass**
+- K1 decrypt → UID/counter recovery: **pass**
+- K2 CMAC verification: **pass**
+- Replay rejection (same counter): **pass**
+- Counter increment across taps: **pass**
+- Full PAM auth cycle via `pam_test boltcard-login boltcard`: **pass**
+- Replay rejection through PAM: **pass**

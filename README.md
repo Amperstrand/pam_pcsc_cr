@@ -158,7 +158,9 @@ auth   required   pam_pcsc_cr.so               \
 **Manual NFC reader test utility** (`ntag424_testread`, `noinst_PROGRAMS`):
 
 - Connects to a real reader/card and prints NDEF length and whether
-  `p=`/`c=` parameters are present. Does **not** print URL or key values.
+  `p=`/`c=` parameters are present.
+- With `-v`: also prints the full URL and p/c values (single-use card
+  outputs, not key material — safe for testing).
 
 ### End-to-end test procedure (no hardware required)
 
@@ -195,13 +197,64 @@ using known BoltCard test vectors:
 rm -f /tmp/test-ntag424.conf /tmp/test-ntag424-replay.db
 ```
 
+### Hardware-validated
+
+Tested on real hardware: ACS ACR1252 reader, Bolt Card with NTAG424 DNA,
+deterministic key derivation (IssuerKey `0x00..01`, Version 1), `pcscd`.
+
+| Test | Result |
+|------|--------|
+| Card read via PC/SC | ✅ NDEF 88 bytes |
+| URL + p/c extraction | ✅ `lnurlw://...?p=...&c=...` |
+| Crypto verification (decrypt p, verify CMAC c) | ✅ |
+| Replay rejection (same counter) | ✅ |
+| Counter increment across taps | ✅ |
+| Full PAM auth (`pam_test boltcard-login boltcard`) | ✅ |
+| Replay rejection through PAM | ✅ |
+
+### How to test with real hardware
+
+**Prerequisites**: pcscd, NFC reader, Bolt Card with known keys.
+
+```sh
+# 1. Read what the card produces
+./ntag424_testread -v
+
+# 2. Derive K1/K2 from IssuerKey + UID (deterministic algorithm, see
+#    boltcard/docs/DETERMINISTIC.md).  K1 = CMAC(IssuerKey, 2d003f77),
+#    CardKey = CMAC(IssuerKey, 2d003f75 || UID || Version_LE),
+#    K2 = CMAC(CardKey, 2d003f78).
+
+# 3. Register the card
+sudo ntag424_setup \
+    -u <username> \
+    --uid <uid> \
+    --k1  <k1> \
+    --k2  <k2> \
+    -c   /etc/ntag424.conf
+sudo chmod 600 /etc/ntag424.conf
+
+# 4. Create an isolated PAM service (does not affect system config)
+sudo tee /etc/pam.d/boltcard-login << 'EOF'
+auth    required    pam_pcsc_cr.so \
+    backend=ntag424 \
+    ntag424_config=/etc/ntag424.conf \
+    ntag424_db=/var/lib/ntag424/replay.db
+account required    pam_permit.so
+EOF
+
+# 5. Test auth (card must be on reader)
+sudo make install
+sudo ./pam_test boltcard-login <username>
+
+# 6. For a live demo: auth + drop to shell
+sudo ./pam_test -s boltcard-login <username>
+```
+
 ### Still TODO
 
-- Enrollment / setup tooling: procedure or tool to write NTAG424 DNA keys
-  to a card and register it in the policy config (Milestone 5).
-- Hardening / polish: packaging, key derivation guidance, lockout handling.
-
-See `docs/ntag424-plan.md` for the full milestone plan.
+- Packaging (RPM/deb).
+- Optional: `--issuer-key` flag for `ntag424_setup` to auto-derive K1/K2.
 
 ------------------------------------------------------------------------
 
