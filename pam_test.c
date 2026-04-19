@@ -32,6 +32,10 @@ static int conv_cb(int num_msg, const struct pam_message **msg,
 		return PAM_CONV_ERR;
 
 	for (i = 0; i < num_msg; i++) {
+		if (msg[i]->msg_style == PAM_TEXT_INFO ||
+		    msg[i]->msg_style == PAM_ERROR_MSG) {
+			fprintf(stderr, "%s\n", msg[i]->msg);
+		}
 		(*resp)[i].resp = NULL;
 		(*resp)[i].resp_retcode = 0;
 		if (msg[i]->msg_style == PAM_PROMPT_ECHO_OFF ||

@@ -264,6 +264,14 @@ static ntag424_auth_status_t run_internal(
 		syslog(LOG_INFO, "ntag424: authenticated card [%s] for user [%s]",
 		       card->card_id, params->username);
 
+	if (params->cue && params->pamh) {
+		char info[256];
+		snprintf(info, sizeof(info),
+			 "Card authenticated: %s  counter=%u  uid=%s",
+			 card->card_id, vresult.counter_value, uid_hex);
+		pam_show_info(params->pamh, info);
+	}
+
 	result = NTAG424_AUTH_OK;
 
 out:
