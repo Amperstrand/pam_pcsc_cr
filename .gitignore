@@ -42,6 +42,7 @@ test_ntag424_policy
 test_ntag424_replay
 test_ntag424_pam_glue
 pam_cr_setup
+pam_test
 ntag424_setup
 ntag424_testread
 ntag424_authcheck
