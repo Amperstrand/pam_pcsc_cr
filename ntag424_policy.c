@@ -51,7 +51,10 @@ const char *ntag424_policy_status_string(ntag424_policy_status_t status)
 struct ntag424_policy {
 	struct ntag424_card_entry *cards;
 	size_t                     num_cards;
-	size_t                     cap;       /* allocated capacity */
+	size_t                     cap;
+	uint8_t                    default_issuer_key[NTAG424_KEY_BYTES];
+	int                        has_default_issuer_key;
+	uint32_t                   default_card_version;
 };
 
 /* =========================================================================
@@ -156,7 +159,7 @@ static ntag424_policy_status_t policy_grow(struct ntag424_policy *p)
 #define FIELD_K1   0x02u
 #define FIELD_K2   0x04u
 #define FIELD_USER 0x08u
-#define FIELDS_ALL 0x0Fu
+#define FIELDS_MANDATORY (FIELD_UID | FIELD_USER)
 
 static ntag424_policy_status_t
 finalise_entry(struct ntag424_policy *policy,
@@ -167,13 +170,25 @@ finalise_entry(struct ntag424_policy *policy,
 	(void)lineno;
 
 	if (fields_set == 0)
-		return NTAG424_POLICY_OK;  /* empty (initial) state, nothing to finalise */
+		return NTAG424_POLICY_OK;
 
-	if ((fields_set & FIELDS_ALL) != FIELDS_ALL)
-		return NTAG424_POLICY_ERR_PARSE;  /* missing required field */
+	if ((fields_set & FIELDS_MANDATORY) != FIELDS_MANDATORY)
+		return NTAG424_POLICY_ERR_PARSE;
+
+	/* Key resolution: k1 and k2 must be both present or both absent.
+	 * If absent, card must have issuer_key or global default must exist. */
+	{
+		int has_k1 = (fields_set & FIELD_K1) != 0;
+		int has_k2 = (fields_set & FIELD_K2) != 0;
+		if (has_k1 != has_k2)
+			return NTAG424_POLICY_ERR_PARSE;
+		if (!has_k1 && !entry->has_issuer_key
+		    && !policy->has_default_issuer_key)
+			return NTAG424_POLICY_ERR_PARSE;
+	}
 
 	if (policy_has_duplicate(policy, entry->card_id))
-		return NTAG424_POLICY_ERR_PARSE;  /* duplicate card_id */
+		return NTAG424_POLICY_ERR_PARSE;
 
 	if (policy->num_cards >= policy->cap) {
 		ntag424_policy_status_t rc = policy_grow(policy);
@@ -193,7 +208,7 @@ ntag424_policy_status_t ntag424_policy_load(const char *path,
 	/* line buffer: NTAG424_POLICY_LINE_MAX chars + NUL + possible newline */
 	char buf[NTAG424_POLICY_LINE_MAX + 2];
 	int lineno = 0;
-	int in_section = 0;                    /* currently inside [card:id] */
+	int in_section = 0;                    /* 0=none, 1=[card:], 2=[defaults] */
 	struct ntag424_card_entry cur;
 	unsigned int fields_set = 0;
 	ntag424_policy_status_t rc = NTAG424_POLICY_OK;
@@ -245,10 +260,18 @@ ntag424_policy_status_t ntag424_policy_load(const char *path,
 
 		/* ── Section header ──────────────────────────────────── */
 		if (line[0] == '[') {
-			/* Finalise previous section before starting a new one */
+			/* Finalise previous card section before starting a new one */
 			rc = finalise_entry(policy, &cur, fields_set, lineno);
 			if (rc != NTAG424_POLICY_OK)
 				goto done;
+
+			/* Parse [defaults] */
+			if (trimlen == 10 &&
+			    strncmp(line, "[defaults]", 10) == 0) {
+				in_section = 2;
+				fields_set = 0;
+				continue;
+			}
 
 			/* Parse [card:<id>] */
 			if (trimlen < 8 ||
@@ -260,7 +283,7 @@ ntag424_policy_status_t ntag424_policy_load(const char *path,
 
 			{
 				const char *id_start = line + 6;
-				size_t id_len = trimlen - 7; /* -6 for "[card:" and -1 for "]" */
+				size_t id_len = trimlen - 7;
 
 				if (!policy_is_valid_id(id_start, id_len)) {
 					rc = NTAG424_POLICY_ERR_PARSE;
@@ -279,7 +302,6 @@ ntag424_policy_status_t ntag424_policy_load(const char *path,
 
 		/* ── Key = value ─────────────────────────────────────── */
 		if (!in_section) {
-			/* Key/value outside any section */
 			rc = NTAG424_POLICY_ERR_PARSE;
 			goto done;
 		}
@@ -309,6 +331,33 @@ ntag424_policy_status_t ntag424_policy_load(const char *path,
 				goto done;
 			}
 
+			/* ── [defaults] section keys ──────────────────── */
+			if (in_section == 2) {
+				if (key_len == 10 && strncmp(key, "issuer_key", 10) == 0) {
+					if (policy_parse_hex(val, val_len,
+							    policy->default_issuer_key,
+							    NTAG424_KEY_BYTES) != 0) {
+						rc = NTAG424_POLICY_ERR_PARSE;
+						goto done;
+					}
+					policy->has_default_issuer_key = 1;
+				} else if (key_len == 12 && strncmp(key, "card_version", 12) == 0) {
+					char vbuf[16];
+					if (val_len == 0 || val_len >= sizeof(vbuf)) {
+						rc = NTAG424_POLICY_ERR_PARSE;
+						goto done;
+					}
+					memcpy(vbuf, val, val_len);
+					vbuf[val_len] = '\0';
+					policy->default_card_version = (uint32_t)atoi(vbuf);
+				} else {
+					rc = NTAG424_POLICY_ERR_PARSE;
+					goto done;
+				}
+				continue;
+			}
+
+			/* ── [card:] section keys ─────────────────────── */
 			if (key_len == 3 && strncmp(key, "uid", 3) == 0) {
 				if (policy_parse_hex(val, val_len,
 						     cur.uid,
@@ -345,11 +394,32 @@ ntag424_policy_status_t ntag424_policy_load(const char *path,
 				cur.username[val_len] = '\0';
 				fields_set |= FIELD_USER;
 
+			} else if (key_len == 10 && strncmp(key, "issuer_key", 10) == 0) {
+				if (policy_parse_hex(val, val_len,
+						     cur.issuer_key,
+						     NTAG424_KEY_BYTES) != 0) {
+					rc = NTAG424_POLICY_ERR_PARSE;
+					goto done;
+				}
+				cur.has_issuer_key = 1;
+
+			} else if (key_len == 12 && strncmp(key, "card_version", 12) == 0) {
+				char vbuf[16];
+				if (val_len == 0 || val_len >= sizeof(vbuf)) {
+					rc = NTAG424_POLICY_ERR_PARSE;
+					goto done;
+				}
+				memcpy(vbuf, val, val_len);
+				vbuf[val_len] = '\0';
+				cur.card_version = (uint32_t)atoi(vbuf);
+
 			} else {
-				/* Unknown key — fail closed */
 				rc = NTAG424_POLICY_ERR_PARSE;
 				goto done;
 			}
+
+			if (fields_set & FIELD_K1 && fields_set & FIELD_K2)
+				cur.has_k1_k2 = 1;
 		}
 	}
 
@@ -441,13 +511,34 @@ ntag424_policy_status_t ntag424_policy_try_verify(
 		const struct ntag424_card_entry *e = &policy->cards[i];
 		ntag424_verify_status_t vrc;
 		struct ntag424_verify_result result;
+		uint8_t k1[NTAG424_KEY_BYTES];
+		uint8_t k2[NTAG424_KEY_BYTES];
 
 		if (strcmp(e->username, username) != 0)
 			continue;
 
+		/* Resolve keys: explicit k1/k2 > card issuer_key > global default */
+		if (e->has_k1_k2) {
+			memcpy(k1, e->k1, NTAG424_KEY_BYTES);
+			memcpy(k2, e->k2, NTAG424_KEY_BYTES);
+		} else {
+			const uint8_t *ik = e->has_issuer_key ? e->issuer_key
+				: policy->has_default_issuer_key ? policy->default_issuer_key
+				: NULL;
+			uint32_t ver = e->card_version ? e->card_version
+				: policy->default_card_version ? policy->default_card_version
+				: 1;
+
+			if (!ik)
+				continue;
+
+			vrc = ntag424_derive_keys(ik, e->uid, ver, k1, k2);
+			if (vrc != NTAG424_VERIFY_OK)
+				continue;
+		}
+
 		memset(&result, 0, sizeof(result));
-		vrc = ntag424_verify_from_url(url_or_query, e->k1, e->k2,
-					      &result);
+		vrc = ntag424_verify_from_url(url_or_query, k1, k2, &result);
 		if (vrc != NTAG424_VERIFY_OK)
 			continue;
 
@@ -494,21 +585,65 @@ static ntag424_policy_status_t write_card_entry(FILE *f,
 						const struct ntag424_card_entry *e)
 {
 	char uid_hex[NTAG424_UID_BYTES * 2 + 1];
-	char k1_hex[NTAG424_KEY_BYTES * 2 + 1];
-	char k2_hex[NTAG424_KEY_BYTES * 2 + 1];
 
 	format_hex_lower(e->uid, NTAG424_UID_BYTES, uid_hex);
-	format_hex_lower(e->k1, NTAG424_KEY_BYTES, k1_hex);
-	format_hex_lower(e->k2, NTAG424_KEY_BYTES, k2_hex);
-
 	uid_hex[NTAG424_UID_BYTES * 2] = '\0';
-	k1_hex[NTAG424_KEY_BYTES * 2] = '\0';
-	k2_hex[NTAG424_KEY_BYTES * 2] = '\0';
 
-	if (fprintf(f, "[card:%s]\nuid  = %s\nk1   = %s\nk2   = %s\nuser = %s\n",
-		    e->card_id, uid_hex, k1_hex, k2_hex,
-		    e->username) < 0)
+	if (fprintf(f, "[card:%s]\nuid  = %s\n", e->card_id, uid_hex) < 0)
 		return NTAG424_POLICY_ERR_OPEN;
+
+	if (e->has_k1_k2) {
+		char k1_hex[NTAG424_KEY_BYTES * 2 + 1];
+		char k2_hex[NTAG424_KEY_BYTES * 2 + 1];
+		format_hex_lower(e->k1, NTAG424_KEY_BYTES, k1_hex);
+		format_hex_lower(e->k2, NTAG424_KEY_BYTES, k2_hex);
+		k1_hex[NTAG424_KEY_BYTES * 2] = '\0';
+		k2_hex[NTAG424_KEY_BYTES * 2] = '\0';
+		if (fprintf(f, "k1   = %s\nk2   = %s\n", k1_hex, k2_hex) < 0)
+			return NTAG424_POLICY_ERR_OPEN;
+	} else if (e->has_issuer_key) {
+		char ik_hex[NTAG424_KEY_BYTES * 2 + 1];
+		format_hex_lower(e->issuer_key, NTAG424_KEY_BYTES, ik_hex);
+		ik_hex[NTAG424_KEY_BYTES * 2] = '\0';
+		if (fprintf(f, "issuer_key = %s\n", ik_hex) < 0)
+			return NTAG424_POLICY_ERR_OPEN;
+		if (e->card_version) {
+			if (fprintf(f, "card_version = %u\n",
+				    (unsigned)e->card_version) < 0)
+				return NTAG424_POLICY_ERR_OPEN;
+		}
+	}
+
+	if (fprintf(f, "user = %s\n", e->username) < 0)
+		return NTAG424_POLICY_ERR_OPEN;
+
+	return NTAG424_POLICY_OK;
+}
+
+static ntag424_policy_status_t write_defaults_section(
+	FILE *f, const struct ntag424_policy *policy)
+{
+	if (!policy->has_default_issuer_key)
+		return NTAG424_POLICY_OK;
+
+	{
+		char ik_hex[NTAG424_KEY_BYTES * 2 + 1];
+		format_hex_lower(policy->default_issuer_key,
+				 NTAG424_KEY_BYTES, ik_hex);
+		ik_hex[NTAG424_KEY_BYTES * 2] = '\0';
+
+		if (fprintf(f, "[defaults]\nissuer_key = %s\n", ik_hex) < 0)
+			return NTAG424_POLICY_ERR_OPEN;
+
+		if (policy->default_card_version) {
+			if (fprintf(f, "card_version = %u\n",
+				    (unsigned)policy->default_card_version) < 0)
+				return NTAG424_POLICY_ERR_OPEN;
+		}
+
+		if (fprintf(f, "\n") < 0)
+			return NTAG424_POLICY_ERR_OPEN;
+	}
 
 	return NTAG424_POLICY_OK;
 }
@@ -524,6 +659,7 @@ ntag424_policy_status_t ntag424_policy_add_card(
 	int found_idx = -1;
 	size_t i;
 	char tmp_path[512];
+	int entry_has_keys;
 
 	rc = ntag424_policy_validate_card_entry(entry);
 	if (rc != NTAG424_POLICY_OK)
@@ -532,11 +668,14 @@ ntag424_policy_status_t ntag424_policy_add_card(
 	if (!config_path)
 		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
 
-	/* Try to load existing config */
+	entry_has_keys = entry->has_k1_k2 || entry->has_issuer_key;
+
 	rc = ntag424_policy_load(config_path, &policy);
 
 	if (rc == NTAG424_POLICY_ERR_OPEN) {
-		/* File doesn't exist — create new */
+		if (!entry_has_keys)
+			return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
+
 		f = fopen(config_path, "w");
 		if (!f)
 			return NTAG424_POLICY_ERR_OPEN;
@@ -546,7 +685,12 @@ ntag424_policy_status_t ntag424_policy_add_card(
 	}
 
 	if (rc != NTAG424_POLICY_OK)
-		return rc;  /* malformed existing config */
+		return rc;
+
+	if (!entry_has_keys && !policy->has_default_issuer_key) {
+		ntag424_policy_free(policy);
+		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
+	}
 
 	/* Check for duplicate card_id */
 	for (i = 0; i < policy->num_cards; i++) {
@@ -569,6 +713,15 @@ ntag424_policy_status_t ntag424_policy_add_card(
 	if (!f) {
 		ntag424_policy_free(policy);
 		return NTAG424_POLICY_ERR_OPEN;
+	}
+
+	/* Write [defaults] section if present */
+	rc = write_defaults_section(f, policy);
+	if (rc != NTAG424_POLICY_OK) {
+		fclose(f);
+		unlink(tmp_path);
+		ntag424_policy_free(policy);
+		return rc;
 	}
 
 	for (i = 0; i < policy->num_cards; i++) {

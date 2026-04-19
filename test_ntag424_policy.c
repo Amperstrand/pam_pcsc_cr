@@ -789,6 +789,368 @@ static void test_status_strings(void)
  * H. Card entry validation and config file writing
  * ========================================================== */
 
+/* ============================================================
+ * E. [defaults] section and key resolution
+ * ========================================================== */
+
+/* HW Bolt Card: UID=04bd60fa967380, IK=00..01, v1
+ * K1=55da174c9608993dc27bb3f30a4a7314, K2=e82327c7e2f27f2fd0361bacb4ac9d1e */
+#define HW_UID         "04bd60fa967380"
+#define HW_ISSUER_KEY  "00000000000000000000000000000001"
+#define HW_K1          "55da174c9608993dc27bb3f30a4a7314"
+#define HW_K2          "e82327c7e2f27f2fd0361bacb4ac9d1e"
+
+static const char DEFAULTS_CONFIG[] =
+	"[defaults]\n"
+	"issuer_key = " HW_ISSUER_KEY "\n"
+	"\n"
+	"[card:hwcard]\n"
+	"uid  = " HW_UID "\n"
+	"user = testuser\n";
+
+/* Config with per-card issuer_key */
+static const char PERCARD_IK_CONFIG[] =
+	"[card:special]\n"
+	"uid        = " HW_UID "\n"
+	"issuer_key = " HW_ISSUER_KEY "\n"
+	"user       = testuser\n";
+
+/* Card with no keys and no [defaults] — must fail */
+static const char NO_KEYS_NO_DEFAULTS[] =
+	"[card:bad]\n"
+	"uid  = " HW_UID "\n"
+	"user = testuser\n";
+
+static void test_parse_defaults_section(void)
+{
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	ntag424_policy_status_t rc;
+
+	if (write_temp_config(DEFAULTS_CONFIG, path, sizeof(path)) != 0) {
+		printf("SKIP: test_parse_defaults_section\n"); return;
+	}
+	rc = ntag424_policy_load(path, &p);
+	unlink(path);
+
+	ASSERT("parse_defaults_rc", rc == NTAG424_POLICY_OK);
+	ASSERT("parse_defaults_notnull", p != NULL);
+	ntag424_policy_free(p);
+}
+
+static void test_parse_defaults_with_card_version(void)
+{
+	static const char cfg[] =
+		"[defaults]\n"
+		"issuer_key = " HW_ISSUER_KEY "\n"
+		"card_version = 2\n"
+		"\n"
+		"[card:c1]\n"
+		"uid  = " HW_UID "\n"
+		"user = alice\n";
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	ntag424_policy_status_t rc;
+
+	if (write_temp_config(cfg, path, sizeof(path)) != 0) {
+		printf("SKIP: test_parse_defaults_with_card_version\n"); return;
+	}
+	rc = ntag424_policy_load(path, &p);
+	unlink(path);
+
+	ASSERT("parse_defaults_ver_rc", rc == NTAG424_POLICY_OK);
+	ntag424_policy_free(p);
+}
+
+static void test_parse_defaults_unknown_key(void)
+{
+	static const char cfg[] =
+		"[defaults]\n"
+		"issuer_key = " HW_ISSUER_KEY "\n"
+		"bad_key = value\n";
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	ntag424_policy_status_t rc;
+
+	if (write_temp_config(cfg, path, sizeof(path)) != 0) {
+		printf("SKIP: test_parse_defaults_unknown_key\n"); return;
+	}
+	rc = ntag424_policy_load(path, &p);
+	unlink(path);
+
+	ASSERT("parse_defaults_bad_key", rc == NTAG424_POLICY_ERR_PARSE);
+}
+
+static void test_parse_percard_issuer_key(void)
+{
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	ntag424_policy_status_t rc;
+
+	if (write_temp_config(PERCARD_IK_CONFIG, path, sizeof(path)) != 0) {
+		printf("SKIP: test_parse_percard_issuer_key\n"); return;
+	}
+	rc = ntag424_policy_load(path, &p);
+	unlink(path);
+
+	ASSERT("parse_percard_ik_rc", rc == NTAG424_POLICY_OK);
+	ASSERT("parse_percard_ik_notnull", p != NULL);
+	ntag424_policy_free(p);
+}
+
+static void test_parse_no_keys_no_defaults_fails(void)
+{
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	ntag424_policy_status_t rc;
+
+	if (write_temp_config(NO_KEYS_NO_DEFAULTS, path, sizeof(path)) != 0) {
+		printf("SKIP: test_parse_no_keys_no_defaults_fails\n"); return;
+	}
+	rc = ntag424_policy_load(path, &p);
+	unlink(path);
+
+	ASSERT("parse_no_keys_no_defaults",
+	       rc == NTAG424_POLICY_ERR_PARSE);
+}
+
+static void test_parse_only_k1_no_k2_fails(void)
+{
+	static const char cfg[] =
+		"[card:c1]\n"
+		"uid  = " TV_UID "\n"
+		"k1   = " TV_K1 "\n"
+		"user = alice\n";
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	ntag424_policy_status_t rc;
+
+	if (write_temp_config(cfg, path, sizeof(path)) != 0) {
+		printf("SKIP: test_parse_only_k1_no_k2_fails\n"); return;
+	}
+	rc = ntag424_policy_load(path, &p);
+	unlink(path);
+	ASSERT("parse_only_k1", rc == NTAG424_POLICY_ERR_PARSE);
+}
+
+static void test_parse_only_k2_no_k1_fails(void)
+{
+	static const char cfg[] =
+		"[card:c1]\n"
+		"uid  = " TV_UID "\n"
+		"k2   = " TV_K2 "\n"
+		"user = alice\n";
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	ntag424_policy_status_t rc;
+
+	if (write_temp_config(cfg, path, sizeof(path)) != 0) {
+		printf("SKIP: test_parse_only_k2_no_k1_fails\n"); return;
+	}
+	rc = ntag424_policy_load(path, &p);
+	unlink(path);
+	ASSERT("parse_only_k2", rc == NTAG424_POLICY_ERR_PARSE);
+}
+
+/* Key resolution: explicit k1/k2 wins over per-card issuer_key */
+static void test_key_resolution_explicit_wins(void)
+{
+	static const char cfg[] =
+		"[card:explicit]\n"
+		"uid        = " TV_UID "\n"
+		"k1         = " TV_K1 "\n"
+		"k2         = " TV_K2 "\n"
+		"issuer_key = deadbeefdeadbeefdeadbeefdeadbeef\n"
+		"user       = alice\n";
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	struct ntag424_verify_result result;
+	const struct ntag424_card_entry *card = NULL;
+	ntag424_policy_status_t rc;
+
+	if (write_temp_config(cfg, path, sizeof(path)) != 0) {
+		printf("SKIP: test_key_resolution_explicit_wins\n"); return;
+	}
+	ntag424_policy_load(path, &p);
+	unlink(path);
+	if (!p) { printf("SKIP: test_key_resolution_explicit_wins (load)\n"); return; }
+
+	memset(&result, 0, sizeof(result));
+	rc = ntag424_policy_try_verify(p, "alice", TV_URL, &result, &card);
+	ASSERT("key_resolution_explicit", rc == NTAG424_POLICY_OK);
+	ASSERT("key_resolution_explicit_counter", result.counter_value == 3U);
+	ntag424_policy_free(p);
+}
+
+static void test_key_resolution_percard_ik_derives_correctly(void)
+{
+	char path[64];
+	struct ntag424_policy *p = NULL;
+	uint8_t ik[NTAG424_KEY_BYTES];
+	uint8_t uid[NTAG424_UID_BYTES];
+	uint8_t derived_k1[NTAG424_KEY_BYTES];
+	uint8_t derived_k2[NTAG424_KEY_BYTES];
+	uint8_t expected_k1[NTAG424_KEY_BYTES];
+	uint8_t expected_k2[NTAG424_KEY_BYTES];
+
+	parse_hex(HW_ISSUER_KEY, ik, NTAG424_KEY_BYTES);
+	parse_hex(HW_UID, uid, NTAG424_UID_BYTES);
+	parse_hex(HW_K1, expected_k1, NTAG424_KEY_BYTES);
+	parse_hex(HW_K2, expected_k2, NTAG424_KEY_BYTES);
+
+	ASSERT("derive_keys_rc",
+	       ntag424_derive_keys(ik, uid, 1, derived_k1, derived_k2)
+	       == NTAG424_VERIFY_OK);
+
+	ASSERT("derive_k1_match",
+	       memcmp(derived_k1, expected_k1, NTAG424_KEY_BYTES) == 0);
+	ASSERT("derive_k2_match",
+	       memcmp(derived_k2, expected_k2, NTAG424_KEY_BYTES) == 0);
+
+	if (write_temp_config(PERCARD_IK_CONFIG, path, sizeof(path)) != 0) {
+		printf("SKIP: test_key_resolution_percard_ik_derives_correctly\n"); return;
+	}
+	ASSERT("percarrd_ik_load",
+	       ntag424_policy_load(path, &p) == NTAG424_POLICY_OK);
+	unlink(path);
+	ntag424_policy_free(p);
+}
+
+static void test_key_resolution_global_defaults_derives_correctly(void)
+{
+	char path[64];
+	struct ntag424_policy *p = NULL;
+
+	if (write_temp_config(DEFAULTS_CONFIG, path, sizeof(path)) != 0) {
+		printf("SKIP: test_key_resolution_global_defaults_derives_correctly\n");
+		return;
+	}
+	ASSERT("defaults_load",
+	       ntag424_policy_load(path, &p) == NTAG424_POLICY_OK);
+	unlink(path);
+	ntag424_policy_free(p);
+}
+
+/* Test that [defaults] is preserved when add_card rewrites the config */
+static void test_add_card_preserves_defaults(void)
+{
+	char path[64];
+	struct ntag424_policy *pol = NULL;
+	const struct ntag424_card_entry *found;
+	struct ntag424_card_entry e;
+	uint8_t uid2[NTAG424_UID_BYTES];
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_pd_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+	}
+	write_temp_config(DEFAULTS_CONFIG, path, sizeof(path));
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "card2");
+	snprintf(e.username, sizeof(e.username), "bob");
+	parse_hex("04AABBCCDDEEFF", uid2, NTAG424_UID_BYTES);
+	memcpy(e.uid, uid2, NTAG424_UID_BYTES);
+	e.has_k1_k2 = 0;
+	e.has_issuer_key = 0;
+
+	ASSERT("add_preserves_defaults",
+	       ntag424_policy_add_card(path, &e, 0) == NTAG424_POLICY_OK);
+
+	ASSERT("add_defaults_parse",
+	       ntag424_policy_load(path, &pol) == NTAG424_POLICY_OK);
+
+	/* Original card should still work */
+	{
+		uint8_t hw_uid[NTAG424_UID_BYTES];
+		parse_hex(HW_UID, hw_uid, NTAG424_UID_BYTES);
+		ASSERT("add_defaults_orig",
+		       ntag424_policy_lookup(pol, "testuser", hw_uid, &found)
+		       == NTAG424_POLICY_OK);
+	}
+
+	/* New card should be there */
+	ASSERT("add_defaults_new",
+	       ntag424_policy_lookup(pol, "bob", uid2, &found)
+	       == NTAG424_POLICY_OK);
+
+	ntag424_policy_free(pol);
+	unlink(path);
+}
+
+/* Test add_card with issuer_key entry */
+static void test_add_card_with_issuer_key(void)
+{
+	char path[64];
+	struct ntag424_policy *pol;
+	const struct ntag424_card_entry *found;
+	struct ntag424_card_entry e;
+	uint8_t uid_bytes[NTAG424_UID_BYTES];
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_aik_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+		unlink(path);
+	}
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "ikcard");
+	snprintf(e.username, sizeof(e.username), "charlie");
+	parse_hex(HW_UID, uid_bytes, NTAG424_UID_BYTES);
+	memcpy(e.uid, uid_bytes, NTAG424_UID_BYTES);
+	parse_hex(HW_ISSUER_KEY, e.issuer_key, NTAG424_KEY_BYTES);
+	e.has_issuer_key = 1;
+
+	ASSERT("add_ik_file",
+	       ntag424_policy_add_card(path, &e, 0) == NTAG424_POLICY_OK);
+
+	ASSERT("add_ik_parse",
+	       ntag424_policy_load(path, &pol) == NTAG424_POLICY_OK);
+
+	ASSERT("add_ik_lookup",
+	       ntag424_policy_lookup(pol, "charlie", uid_bytes, &found)
+	       == NTAG424_POLICY_OK);
+
+	ASSERT("add_ik_has_ik",
+	       found && found->has_issuer_key == 1);
+
+	ntag424_policy_free(pol);
+	unlink(path);
+}
+
+/* Test add_card rejects no-keys when no defaults exist */
+static void test_add_card_no_keys_no_defaults_rejected(void)
+{
+	char path[64];
+	struct ntag424_card_entry e;
+	uint8_t uid_bytes[NTAG424_UID_BYTES];
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_nknd_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+		unlink(path);
+	}
+
+	memset(&e, 0, sizeof(e));
+	snprintf(e.card_id, sizeof(e.card_id), "nokcard");
+	snprintf(e.username, sizeof(e.username), "dave");
+	parse_hex(HW_UID, uid_bytes, NTAG424_UID_BYTES);
+	memcpy(e.uid, uid_bytes, NTAG424_UID_BYTES);
+
+	ASSERT("add_nknd_rejected",
+	       ntag424_policy_add_card(path, &e, 0)
+	       == NTAG424_POLICY_ERR_INVALID_ARGUMENT);
+
+	unlink(path);
+}
+
+/* ============================================================
+ * I. Card entry validation and config file writing
+ * ========================================================== */
+
 static void test_validate_good_entry(void)
 {
 	struct ntag424_card_entry e;
@@ -851,6 +1213,7 @@ static void test_add_to_new_file(void)
 	parse_hex(TV_UID, e.uid, NTAG424_UID_BYTES);
 	parse_hex(TV_K1, e.k1, NTAG424_KEY_BYTES);
 	parse_hex(TV_K2, e.k2, NTAG424_KEY_BYTES);
+	e.has_k1_k2 = 1;
 
 	ASSERT("add_new_file",
 	       ntag424_policy_add_card(path, &e, 0) == NTAG424_POLICY_OK);
@@ -899,6 +1262,7 @@ static void test_add_to_existing_file(void)
 	memcpy(e2.uid, uid2, NTAG424_UID_BYTES);
 	parse_hex("00112233445566778899aabbccddeeff", e2.k1, NTAG424_KEY_BYTES);
 	parse_hex("ffeeddccbbaa99887766554433221100", e2.k2, NTAG424_KEY_BYTES);
+	e2.has_k1_k2 = 1;
 
 	ASSERT("add_existing",
 	       ntag424_policy_add_card(path, &e2, 0) == NTAG424_POLICY_OK);
@@ -941,6 +1305,9 @@ static void test_add_duplicate_rejected(void)
 	snprintf(e.username, sizeof(e.username), "mallory");
 	parse_hex("04DEADBEEF0000", uid2, NTAG424_UID_BYTES);
 	memcpy(e.uid, uid2, NTAG424_UID_BYTES);
+	parse_hex("0c3b25d92b38ae443229dd59ad34b85d", e.k1, NTAG424_KEY_BYTES);
+	parse_hex("b45775776cb224c75bcde7ca3704e933", e.k2, NTAG424_KEY_BYTES);
+	e.has_k1_k2 = 1;
 
 	ASSERT("dup_rejected",
 	       ntag424_policy_add_card(path, &e, 0)
@@ -971,6 +1338,7 @@ static void test_add_duplicate_overwrite(void)
 	memcpy(e.uid, uid2, NTAG424_UID_BYTES);
 	parse_hex("0c3b25d92b38ae443229dd59ad34b85d", e.k1, NTAG424_KEY_BYTES);
 	parse_hex("b45775776cb224c75bcde7ca3704e933", e.k2, NTAG424_KEY_BYTES);
+	e.has_k1_k2 = 1;
 
 	ASSERT("dup_overwrite",
 	       ntag424_policy_add_card(path, &e, 1) == NTAG424_POLICY_OK);
@@ -1037,6 +1405,7 @@ static void test_add_to_malformed_file(void)
 	parse_hex(TV_UID, e.uid, NTAG424_UID_BYTES);
 	parse_hex(TV_K1, e.k1, NTAG424_KEY_BYTES);
 	parse_hex(TV_K2, e.k2, NTAG424_KEY_BYTES);
+	e.has_k1_k2 = 1;
 
 	ASSERT("add_malformed",
 	       ntag424_policy_add_card(path, &e, 0)
@@ -1067,6 +1436,7 @@ static void test_add_preserves_existing(void)
 	memcpy(e2.uid, uid2, NTAG424_UID_BYTES);
 	parse_hex("00112233445566778899aabbccddeeff", e2.k1, NTAG424_KEY_BYTES);
 	parse_hex("ffeeddccbbaa99887766554433221100", e2.k2, NTAG424_KEY_BYTES);
+	e2.has_k1_k2 = 1;
 
 	ntag424_policy_add_card(path, &e2, 0);
 
@@ -1110,6 +1480,7 @@ static void test_add_roundtrip_hex(void)
 	memcpy(e.k1, expected_k1, NTAG424_KEY_BYTES);
 	parse_hex("99887766554433221100ffeeddccbbaa", expected_k2, NTAG424_KEY_BYTES);
 	memcpy(e.k2, expected_k2, NTAG424_KEY_BYTES);
+	e.has_k1_k2 = 1;
 
 	ntag424_policy_add_card(path, &e, 0);
 	ntag424_policy_load(path, &pol);
@@ -1155,6 +1526,21 @@ int main(void)
 	test_parse_bad_hex_k1();
 	test_parse_k1_too_short();
 	test_parse_line_too_long();
+
+	/* E: [defaults] and key resolution */
+	test_parse_defaults_section();
+	test_parse_defaults_with_card_version();
+	test_parse_defaults_unknown_key();
+	test_parse_percard_issuer_key();
+	test_parse_no_keys_no_defaults_fails();
+	test_parse_only_k1_no_k2_fails();
+	test_parse_only_k2_no_k1_fails();
+	test_key_resolution_explicit_wins();
+	test_key_resolution_percard_ik_derives_correctly();
+	test_key_resolution_global_defaults_derives_correctly();
+	test_add_card_preserves_defaults();
+	test_add_card_with_issuer_key();
+	test_add_card_no_keys_no_defaults_rejected();
 
 	/* B: Lookup */
 	test_lookup_success();

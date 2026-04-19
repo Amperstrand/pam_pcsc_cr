@@ -17,23 +17,45 @@
  *
  *   # Lines beginning with '#' (after optional whitespace) are comments.
  *   # Empty lines are ignored.
+ *
+ *   # Optional global defaults for key derivation:
+ *   [defaults]
+ *   issuer_key   = <32 hex chars = 16 bytes>
+ *   card_version = <integer, default 1>
+ *
  *   # Each card is a section: [card:<id>]
  *   # where <id> is 1-63 characters of [A-Za-z0-9_-].
- *   # Required fields within each section:
- *   #   uid  = <14 lowercase or uppercase hex chars = 7 bytes>
- *   #   k1   = <32 hex chars = 16 bytes>
- *   #   k2   = <32 hex chars = 16 bytes>
- *   #   user = <PAM username, 1-63 printable non-whitespace chars>
+ *   # Required fields: uid, user
+ *   # Key source (pick one, or inherit from [defaults]):
+ *   #   k1 + k2           — explicit per-card keys
+ *   #   issuer_key         — per-card derivation key
+ *   #   (neither)          — derive from [defaults] issuer_key
+ *   # Optional: card_version (overrides [defaults])
+ *   #
  *   # Unknown keys are rejected (fail-closed).
  *   # Duplicate card IDs are rejected.
  *   # Lines longer than NTAG424_POLICY_LINE_MAX are rejected.
  *
- * Example:
+ * Example (derived keys from global issuer_key):
+ *   [defaults]
+ *   issuer_key = 00000000000000000000000000000001
+ *
  *   [card:boltcard-alice]
+ *   uid  = 04996c6a926980
+ *   user = alice
+ *
+ * Example (explicit per-card keys):
+ *   [card:custom-card]
  *   uid  = 04996c6a926980
  *   k1   = 0c3b25d92b38ae443229dd59ad34b85d
  *   k2   = b45775776cb224c75bcde7ca3704e933
  *   user = alice
+ *
+ * Example (per-card issuer_key):
+ *   [card:special]
+ *   uid        = 04aaaaabbbbbb80
+ *   issuer_key = deadbeefdeadbeefdeadbeefdeadbeef
+ *   user       = charlie
  */
 
 #include <stddef.h>
@@ -76,9 +98,13 @@ const char *ntag424_policy_status_string(ntag424_policy_status_t status);
 struct ntag424_card_entry {
 	char    card_id[NTAG424_POLICY_ID_MAX]; /* identifier from [card:<id>] */
 	uint8_t uid[NTAG424_UID_BYTES];         /* 7 bytes */
-	uint8_t k1[NTAG424_KEY_BYTES];          /* 16 bytes */
-	uint8_t k2[NTAG424_KEY_BYTES];          /* 16 bytes */
+	uint8_t k1[NTAG424_KEY_BYTES];          /* 16 bytes (zero if derived) */
+	uint8_t k2[NTAG424_KEY_BYTES];          /* 16 bytes (zero if derived) */
 	char    username[NTAG424_POLICY_ID_MAX]; /* PAM username */
+	uint8_t issuer_key[NTAG424_KEY_BYTES];  /* per-card issuer key (zero if none) */
+	int     has_issuer_key;                 /* 1 if issuer_key is set in this card */
+	int     has_k1_k2;                      /* 1 if k1/k2 are set in this card */
+	uint32_t card_version;                  /* per-card version override (0 = use default) */
 };
 
 /* -------------------------------------------------------------------------
