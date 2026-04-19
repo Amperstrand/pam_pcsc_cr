@@ -88,26 +88,43 @@ Milestones 1–5 are complete.
 **Config / policy layer** (`ntag424_policy.{c,h}`):
 
 - Parses a small, strict INI-like config file mapping card identities
-  (UID + K1/K2) to PAM usernames.
+  (UID + key material) to PAM usernames.
 - `ntag424_policy_load`: strict fail-closed parser; rejects any unknown
   keys, missing required fields, malformed hex, or duplicate card IDs.
 - `ntag424_policy_lookup`: finds a card entry matching username + UID
   using a constant-time UID comparison.
-- `ntag424_policy_try_verify`: iterates cards for a user, runs the full
-  crypto verifier with each card's keys, and checks the recovered UID
+- `ntag424_policy_try_verify`: iterates cards for a user, resolves keys
+  via the priority chain (explicit k1/k2 > per-card issuer_key > global
+  default), runs the full crypto verifier, and checks the recovered UID
   against the config — the single call from URL + username to verified
   card identity.
-- 58 unit tests, no hardware required.
+- 111 unit tests, no hardware required.
 
 Config format example (`/etc/ntag424.conf`, readable only by root):
 
 ```ini
-# [card:<label>]  — one section per card
+# Optional: system-wide default issuer key for key derivation.
+# Cards without explicit keys or per-card issuer_key will use this.
+[defaults]
+issuer_key = 00000000000000000000000000000001
+
+# Card using global default derivation (only uid + user needed)
 [card:boltcard-alice]
 uid  = 04996c6a926980       # 7-byte card UID (14 hex chars)
+user = alice                # PAM username
+
+# Card with explicit per-card keys
+[card:custom-card]
+uid  = 04996c6a926980
 k1   = 0c3b25d92b38ae443229dd59ad34b85d   # SDM decryption key
 k2   = b45775776cb224c75bcde7ca3704e933   # CMAC verification key
-user = alice                # PAM username
+user = bob
+
+# Card with per-card issuer key
+[card:special]
+uid        = 04aaaaabbbbbb80
+issuer_key = deadbeefdeadbeefdeadbeefdeadbeef
+user       = charlie
 ```
 
 **Replay protection** (`ntag424_replay.{c,h}`):
@@ -172,13 +189,29 @@ using known BoltCard test vectors:
 
 ```sh
 # 1. Register a card in the policy config
+#
+# Option A: Bolt Card with per-card issuer key
+./ntag424_setup \
+    -u alice \
+    --uid 04996c6a926980 \
+    --issuer-key 00000000000000000000000000000001 \
+    -c   /tmp/test-ntag424.conf
+
+# Option B: Explicit per-card keys
 ./ntag424_setup \
     -u alice \
     --uid 04996c6a926980 \
     --k1  0c3b25d92b38ae443229dd59ad34b85d \
     --k2  b45775776cb224c75bcde7ca3704e933 \
     -c   /tmp/test-ntag424.conf
-# → Added card [card-alice-04996c6a926980] for user [alice] to /tmp/test-ntag424.conf
+
+# Option C: Use global defaults (requires [defaults] in config)
+# First manually add [defaults] to the config, then:
+./ntag424_setup \
+    -u alice \
+    --uid 04996c6a926980 \
+    --use-defaults \
+    -c   /tmp/test-ntag424.conf
 
 # 2. Verify authentication (BoltCard test vector 1, counter=3)
 ./ntag424_authcheck \
@@ -223,9 +256,9 @@ deterministic key derivation (IssuerKey `0x00..01`, Version 1), `pcscd`.
 # 1. Read what the card produces
 ./ntag424_testread -v
 
-# 2. Register the card — either with explicit keys or with derived keys:
+# 2. Register the card — choose one:
 
-# Option A: Bolt Card with deterministic key derivation
+# Option A: Bolt Card with deterministic key derivation (recommended)
 sudo ntag424_setup \
     -u <username> \
     --uid <uid> \
@@ -238,6 +271,13 @@ sudo ntag424_setup \
     --uid <uid> \
     --k1  <k1-32hex> \
     --k2  <k2-32hex> \
+    -c /etc/ntag424.conf
+
+# Option C: Rely on [defaults] (add [defaults] section to config first)
+sudo ntag424_setup \
+    -u <username> \
+    --uid <uid> \
+    --use-defaults \
     -c /etc/ntag424.conf
 
 # 3. Secure the config (contains key material — MUST be root-only)

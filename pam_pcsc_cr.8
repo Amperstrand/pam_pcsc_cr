@@ -112,18 +112,55 @@ option is
 .B ykneo:slot=[1|2].
 .SH "NTAG424 CONFIG FORMAT"
 The NTAG424 policy configuration file uses a strict INI-like format.
+An optional
+.B [defaults]
+section provides system-wide key derivation parameters.
 Each card is declared in a
 .B [card:<id>]
-section with four required fields:
+section.
+.sp
+Key resolution priority (highest wins):
+.IP 1. 3
+Explicit per-card
+.B k1
+and
+.B k2
+keys.
+.IP 2. 3
+Per-card
+.B issuer_key
+for deterministic derivation.
+.IP 3. 3
+Global
+.B [defaults] issuer_key
+for deterministic derivation.
+.IP 4. 3
+No keys available \- authentication fails (fail-closed).
+.PP
 .sp
 .nf
-# Lines beginning with '#' are comments.
-# Each card entry:
+# Optional: system-wide default issuer key
+[defaults]
+issuer_key = 00000000000000000000000000000001
+card_version = 1
+
+# Card using global default derivation (uid + user only)
 [card:boltcard-alice]
 uid  = 04996c6a926980       # 14 hex chars (7-byte UID)
+user = alice                # PAM username
+
+# Card with explicit per-card keys
+[card:custom-card]
+uid  = 04996c6a926980
 k1   = 0c3b25d92b38ae443229dd59ad34b85d   # 32 hex chars (AES-128)
 k2   = b45775776cb224c75bcde7ca3704e933   # 32 hex chars (AES-128)
-user = alice                # PAM username
+user = bob
+
+# Card with per-card issuer key
+[card:special]
+uid        = 04aaaaabbbbbb80
+issuer_key = deadbeefdeadbeefdeadbeefdeadbeef
+user       = charlie
 .fi
 .sp
 The parser fails closed: unknown keys, missing fields, malformed hex,
@@ -184,7 +221,7 @@ Released under zlib Open Source license.
 ntag424_setup \- Register NTAG424 DNA NFC cards in the policy config
 .SH SYNOPSIS
 .B ntag424_setup
-\-u \fIuser\fR \-\-uid \fIhex\fR (\-\-issuer\-key \fIhex\fR | \-\-k1 \fIhex\fR \-\-k2 \fIhex\fR)
+\-u \fIuser\fR \-\-uid \fIhex\fR (\-\-issuer\-key \fIhex\fR | \-\-k1 \fIhex\fR \-\-k2 \fIhex\fR | \-\-use\-defaults)
 [\fIoptions\fR]
 .SH DESCRIPTION
 .B ntag424_setup
@@ -193,9 +230,12 @@ in the policy configuration file used by
 .BR pam_pcsc_cr (8).
 The card is assumed to already be deployed with known keys.
 .PP
-Keys can be provided explicitly (\-\-k1/\-\-k2) or derived automatically
-from an issuer key (\-\-issuer\-key) using the Bolt Card deterministic
-key derivation algorithm.  These two modes are mutually exclusive.
+Keys can be provided in three mutually exclusive ways:
+explicit per-card keys (\-\-k1/\-\-k2),
+per-card issuer key for deterministic derivation (\-\-issuer\-key),
+or no per-card keys at all (\-\-use\-defaults, requires a
+.B [defaults]
+section in the config file).
 .SH OPTIONS
 .TP
 .BI \-u " user"
@@ -206,8 +246,9 @@ PAM username to associate with this card (required).
 .TP
 .BI \-\-issuer\-key " hex"
 16-byte issuer key as 32 hex characters.
-Derives K1 and K2 automatically using the Bolt Card deterministic
-algorithm.  Cannot be combined with \-\-k1/\-\-k2.
+Stores the issuer key in the card entry; K1/K2 are derived at
+authentication time using the Bolt Card deterministic algorithm.
+Cannot be combined with \-\-k1/\-\-k2 or \-\-use\-defaults.
 .TP
 .BI \-\-card\-version " int"
 Card version for key derivation (default: 1).
@@ -236,6 +277,19 @@ If omitted, auto-generated as \fBcard-<user>-<uid>\fR.
 Overwrite an existing card entry with the same ID.
 Without this flag, duplicate card IDs cause an error.
 .TP
+.B \-\-use\-defaults
+Do not store per-card key material.
+The card's K1/K2 will be derived at authentication time from the
+.B [defaults]
+section's
+.B issuer_key
+in the config file.
+Cannot be combined with \-\-k1/\-\-k2/\-\-issuer\-key.
+Requires that the config file already has a
+.B [defaults]
+section with an
+.B issuer_key.
+.TP
 .B \-h
 Show usage help and exit.
 .SH EXAMPLES
@@ -250,15 +304,14 @@ sudo ntag424_setup \e
 sudo chmod 600 /etc/ntag424.conf
 .fi
 .sp
-Register a card with explicit per-card keys:
+Register a card using global defaults (simplest, requires [defaults] in config):
 .sp
 .nf
 sudo ntag424_setup \e
     \-u alice \e
     \-\-uid 04996c6a926980 \e
-    \-\-k1  0c3b25d92b38ae443229dd59ad34b85d \e
-    \-\-k2  b45775776cb224c75bcde7ca3704e933 \e
-    \-c   /etc/ntag424.conf
+    \-\-use\-defaults \e
+    \-c /etc/ntag424.conf
 sudo chmod 600 /etc/ntag424.conf
 .fi
 .sp
@@ -266,7 +319,7 @@ sudo chmod 600 /etc/ntag424.conf
 .TP
 .B /etc/ntag424.conf
 Policy configuration file mapping cards to PAM users.
-Contains K1/K2 key material and must be
+Contains key material (K1/K2 and/or issuer keys) and must be
 .BR root:root " mode " 0600 .
 .TP
 .B /var/lib/ntag424/replay.db
