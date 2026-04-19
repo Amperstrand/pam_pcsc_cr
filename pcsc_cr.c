@@ -28,7 +28,7 @@ freely, subject to the following restrictions:
 #include <string.h>
 #include <alloca.h>
 #include "token.h"
-#include <reader.h>
+#include <PCSC/reader.h>
 
 extern struct token_interface ykneo_interface;
 
