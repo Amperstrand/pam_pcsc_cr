@@ -186,6 +186,15 @@ ntag424_reader_status_t ntag424_pcsc_select_reader(
 ntag424_reader_status_t ntag424_pcsc_connect(struct ntag424_pcsc_ctx *ctx);
 
 /*
+ * Wait up to timeout_ms milliseconds for a card to appear in the
+ * selected reader, then connect.  Uses SCardGetStatusChange().
+ * timeout_ms = 0 means return immediately (same as ntag424_pcsc_connect).
+ * Returns NTAG424_READER_ERR_NO_CARD on timeout.
+ */
+ntag424_reader_status_t ntag424_pcsc_wait_and_connect(
+	struct ntag424_pcsc_ctx *ctx, unsigned int timeout_ms);
+
+/*
  * Retrieve the selected reader name (for display / logging).
  * Returns NULL if no reader has been selected.
  * The returned pointer is valid until the context is closed.

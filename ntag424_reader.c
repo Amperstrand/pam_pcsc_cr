@@ -486,6 +486,40 @@ ntag424_reader_status_t ntag424_pcsc_connect(struct ntag424_pcsc_ctx *ctx)
 	return NTAG424_READER_OK;
 }
 
+ntag424_reader_status_t ntag424_pcsc_wait_and_connect(
+	struct ntag424_pcsc_ctx *ctx, unsigned int timeout_ms)
+{
+	SCARD_READERSTATE rs;
+	LONG rc;
+
+	if (!ctx || !ctx->selected)
+		return NTAG424_READER_ERR_INVALID_ARGUMENT;
+
+	if (timeout_ms == 0)
+		return ntag424_pcsc_connect(ctx);
+
+	memset(&rs, 0, sizeof(rs));
+	rs.szReader = ctx->selected;
+	rs.dwCurrentState = SCARD_STATE_UNAWARE;
+
+	rc = SCardGetStatusChange(ctx->hctx, 0, &rs, 1);
+	if (rc != SCARD_S_SUCCESS && rc != SCARD_E_TIMEOUT)
+		return NTAG424_READER_ERR_NO_CARD;
+
+	if (rs.dwEventState & SCARD_STATE_PRESENT)
+		return ntag424_pcsc_connect(ctx);
+
+	rs.dwCurrentState = rs.dwEventState;
+	rc = SCardGetStatusChange(ctx->hctx, (DWORD)timeout_ms, &rs, 1);
+	if (rc != SCARD_S_SUCCESS)
+		return NTAG424_READER_ERR_NO_CARD;
+
+	if (!(rs.dwEventState & SCARD_STATE_PRESENT))
+		return NTAG424_READER_ERR_NO_CARD;
+
+	return ntag424_pcsc_connect(ctx);
+}
+
 const char *ntag424_pcsc_reader_name(const struct ntag424_pcsc_ctx *ctx)
 {
 	if (!ctx)

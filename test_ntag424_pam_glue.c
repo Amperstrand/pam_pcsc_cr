@@ -202,7 +202,7 @@ static void test_null_params(void)
 static void test_null_transport(void)
 {
 	struct ntag424_auth_params p = {
-		"alice", "/tmp/cfg", "/tmp/db", NULL, 0
+		"alice", "/tmp/cfg", "/tmp/db", NULL, 0, 0, 0, NULL
 	};
 	ASSERT("null_transport",
 	       ntag424_auth_run_with_transport(&p, NULL)
@@ -215,7 +215,7 @@ static void test_empty_username(void)
 	ntag424_transport_t t;
 	struct mock_ctx ctx = { NULL, 0, 0 };
 	t = make_transport(&ctx);
-	struct ntag424_auth_params p = { "", "/tmp/cfg", db, NULL, 0 };
+	struct ntag424_auth_params p = { "", "/tmp/cfg", db, NULL, 0, 0, 0, NULL };
 	ntag424_auth_status_t rc = ntag424_auth_run_with_transport(&p, &t);
 	ASSERT("empty_username", rc == NTAG424_AUTH_ERR_ARGS);
 	unlink(db);
@@ -226,7 +226,7 @@ static void test_null_config_path(void)
 	ntag424_transport_t t;
 	struct mock_ctx ctx = { NULL, 0, 0 };
 	t = make_transport(&ctx);
-	struct ntag424_auth_params p = { "alice", NULL, "/tmp/db", NULL, 0 };
+	struct ntag424_auth_params p = { "alice", NULL, "/tmp/db", NULL, 0, 0, 0, NULL };
 	ASSERT("null_config_path",
 	       ntag424_auth_run_with_transport(&p, &t)
 	       == NTAG424_AUTH_ERR_ARGS);
@@ -237,7 +237,7 @@ static void test_null_db_path(void)
 	ntag424_transport_t t;
 	struct mock_ctx ctx = { NULL, 0, 0 };
 	t = make_transport(&ctx);
-	struct ntag424_auth_params p = { "alice", "/tmp/cfg", NULL, NULL, 0 };
+	struct ntag424_auth_params p = { "alice", "/tmp/cfg", NULL, NULL, 0, 0, 0, NULL };
 	ASSERT("null_db_path",
 	       ntag424_auth_run_with_transport(&p, &t)
 	       == NTAG424_AUTH_ERR_ARGS);
@@ -254,7 +254,7 @@ static void test_config_not_found(void)
 	struct mock_ctx ctx = { NULL, 0, 0 };
 	t = make_transport(&ctx);
 	struct ntag424_auth_params p = {
-		"alice", "/tmp/ntag424_glue_NOEXIST_XYZ", db, NULL, 0
+		"alice", "/tmp/ntag424_glue_NOEXIST_XYZ", db, NULL, 0, 0, 0, NULL
 	};
 	ASSERT("config_not_found",
 	       ntag424_auth_run_with_transport(&p, &t)
@@ -273,7 +273,7 @@ static void test_db_invalid_path(void)
 		printf("SKIP: test_db_invalid_path\n"); return;
 	}
 	struct ntag424_auth_params p = {
-		"alice", cfg, "/nonexistent/dir/db.sqlite", NULL, 0
+		"alice", cfg, "/nonexistent/dir/db.sqlite", NULL, 0, 0, 0, NULL
 	};
 	ASSERT("db_invalid_path",
 	       ntag424_auth_run_with_transport(&p, &t)
@@ -293,7 +293,7 @@ static void test_config_malformed(void)
 	}
 	make_temp_db_path(db, sizeof(db));
 
-	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0 };
+	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0, 0, 0, NULL };
 	ASSERT("config_malformed",
 	       ntag424_auth_run_with_transport(&p, &t)
 	       == NTAG424_AUTH_ERR_CONFIG);
@@ -326,7 +326,7 @@ static void test_reader_ndef_select_fails(void)
 	ctx.next_idx  = 0;
 	t = make_transport(&ctx);
 
-	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0 };
+	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0, 0, 0, NULL };
 	ASSERT("reader_select_fails",
 	       ntag424_auth_run_with_transport(&p, &t)
 	       == NTAG424_AUTH_ERR_READER);
@@ -357,7 +357,7 @@ static void test_reader_cc_select_fails(void)
 	ctx.next_idx  = 0;
 	t = make_transport(&ctx);
 
-	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0 };
+	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0, 0, 0, NULL };
 	ASSERT("reader_cc_fails",
 	       ntag424_auth_run_with_transport(&p, &t)
 	       == NTAG424_AUTH_ERR_READER);
@@ -388,7 +388,7 @@ static void test_full_success(void)
 	ctx.next_idx  = 0;
 	t = make_transport(&ctx);
 
-	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0 };
+	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0, 0, 0, NULL };
 	rc = ntag424_auth_run_with_transport(&p, &t);
 	ASSERT("full_success", rc == NTAG424_AUTH_OK);
 
@@ -420,7 +420,7 @@ static void test_replay_rejected(void)
 	ctx.next_idx  = 0;
 	t = make_transport(&ctx);
 	{
-		struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0 };
+		struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0, 0, 0, NULL };
 		rc = ntag424_auth_run_with_transport(&p, &t);
 		ASSERT("replay_first_ok", rc == NTAG424_AUTH_OK);
 	}
@@ -434,7 +434,7 @@ static void test_replay_rejected(void)
 	ctx.next_idx  = 0;
 	t = make_transport(&ctx);
 	{
-		struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0 };
+		struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0, 0, 0, NULL };
 		rc = ntag424_auth_run_with_transport(&p, &t);
 		ASSERT("replay_second_rejected", rc == NTAG424_AUTH_ERR_REPLAY);
 	}
@@ -466,7 +466,7 @@ static void test_wrong_user(void)
 	t = make_transport(&ctx);
 
 	/* "bob" is not in the config */
-	struct ntag424_auth_params p = { "bob", cfg, db, NULL, 0 };
+	struct ntag424_auth_params p = { "bob", cfg, db, NULL, 0, 0, 0, NULL };
 	ASSERT("wrong_user",
 	       ntag424_auth_run_with_transport(&p, &t)
 	       == NTAG424_AUTH_ERR_POLICY);
@@ -499,7 +499,7 @@ static void test_wrong_keys_in_config(void)
 	ctx.next_idx  = 0;
 	t = make_transport(&ctx);
 
-	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0 };
+	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0, 0, 0, NULL };
 	ASSERT("wrong_keys",
 	       ntag424_auth_run_with_transport(&p, &t)
 	       == NTAG424_AUTH_ERR_POLICY);
@@ -533,7 +533,7 @@ static void test_uid_mismatch_in_config(void)
 	ctx.next_idx  = 0;
 	t = make_transport(&ctx);
 
-	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0 };
+	struct ntag424_auth_params p = { "alice", cfg, db, NULL, 0, 0, 0, NULL };
 	ASSERT("uid_mismatch",
 	       ntag424_auth_run_with_transport(&p, &t)
 	       == NTAG424_AUTH_ERR_POLICY);

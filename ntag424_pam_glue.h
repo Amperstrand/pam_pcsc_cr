@@ -58,6 +58,9 @@ struct ntag424_auth_params {
 	const char *db_path;        /* path to SQLite replay DB (required, created if absent) */
 	const char *reader_substr;  /* reader name substring filter; NULL = first available */
 	int         verbose;        /* if non-zero, emit syslog(LOG_DEBUG/ERR) lines */
+	int         cue;            /* if non-zero, show PAM_TEXT_INFO prompt before card read */
+	unsigned int timeout_ms;    /* milliseconds to wait for card; 0 = immediate (default) */
+	void       *pamh;           /* pam_handle_t* (borrowed); only used for cue display */
 };
 
 /* -------------------------------------------------------------------------

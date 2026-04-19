@@ -66,7 +66,7 @@ typedef enum {
 	BACKEND_NTAG424 = 1   /* NTAG424 DNA card second-factor path */
 } _backend_t;
 
-struct _cfg {
+	struct _cfg {
 	int        noaskpass;
 	int        verbose;
 	int        injectauth;
@@ -76,6 +76,8 @@ struct _cfg {
 	const char *ntag424_config;   /* path to policy config file */
 	const char *ntag424_db;       /* path to SQLite replay DB */
 	const char *ntag424_reader;   /* reader name substring (NULL = first) */
+	int        cue;               /* show "tap card" prompt */
+	unsigned int ntag424_timeout;  /* seconds to wait for card (0 = immediate) */
 };
 
 #ifndef HAVE_PAM_GET_AUTHTOK
@@ -173,6 +175,10 @@ void parse_cfg(struct _cfg * const cfg, int argc, const char *argv[])
 			cfg->ntag424_db = argv[i] + 11;
 		else if (!strncmp(argv[i], "ntag424_reader=", 15))
 			cfg->ntag424_reader = argv[i] + 15;
+		else if (!strcmp(argv[i], "cue"))
+			cfg->cue = 1;
+		else if (!strncmp(argv[i], "timeout=", 8))
+			cfg->ntag424_timeout = (unsigned int)atoi(argv[i] + 8);
 		else syslog(LOG_ERR, "unrecognized arg: \"%s\"", argv[i]);
 
 		if (cfg->verbose) syslog(LOG_DEBUG, "arg: \"%s\"", argv[i]);
@@ -216,6 +222,9 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 		params.db_path      = cfg.ntag424_db;
 		params.reader_substr = cfg.ntag424_reader; /* NULL ok */
 		params.verbose      = cfg.verbose;
+		params.cue          = cfg.cue;
+		params.timeout_ms   = cfg.ntag424_timeout * 1000;
+		params.pamh         = (void *)pamh;
 
 		rc = ntag424_auth_run(&params);
 		if (rc == NTAG424_AUTH_OK) {

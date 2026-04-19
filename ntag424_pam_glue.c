@@ -16,6 +16,13 @@
 #include <string.h>
 #include <syslog.h>
 
+#ifdef HAVE_SECURITY_PAM_APPL_H
+# include <security/pam_appl.h>
+#endif
+#ifdef HAVE_SECURITY_PAM_MODULES_H
+# include <security/pam_modules.h>
+#endif
+
 #include "ntag424_pam_glue.h"
 #include "ntag424_policy.h"
 #include "ntag424_replay.h"
@@ -45,6 +52,36 @@ const char *ntag424_auth_status_string(ntag424_auth_status_t status)
 		return "replay counter check failed";
 	default:
 		return "unknown error";
+	}
+}
+
+/* =========================================================================
+ * PAM conversation helper (only used when params->cue is set)
+ * ====================================================================== */
+
+static void pam_show_info(void *pamh, const char *text)
+{
+	struct pam_conv *conv;
+	const struct pam_message msg = {
+		.msg_style = PAM_TEXT_INFO,
+		.msg = (char *)(uintptr_t)text
+	};
+	const struct pam_message *msgp = &msg;
+	struct pam_response *resp = NULL;
+	int rv;
+
+	if (!pamh)
+		return;
+
+	rv = pam_get_item((pam_handle_t *)pamh, PAM_CONV,
+			  (const void **)&conv);
+	if (rv != PAM_SUCCESS || !conv || !conv->conv)
+		return;
+
+	conv->conv(1, &msgp, &resp, conv->appdata_ptr);
+	if (resp) {
+		free(resp->resp);
+		free(resp);
 	}
 }
 
@@ -150,7 +187,15 @@ static ntag424_auth_status_t run_internal(
 			       ntag424_pcsc_reader_name(pcsc)
 			       ? ntag424_pcsc_reader_name(pcsc) : "(unknown)");
 
-		rdr_rc = ntag424_pcsc_connect(pcsc);
+		if (params->cue)
+			pam_show_info(params->pamh,
+				      "Tap your NFC card on the reader...");
+
+		if (params->timeout_ms > 0)
+			rdr_rc = ntag424_pcsc_wait_and_connect(pcsc,
+								params->timeout_ms);
+		else
+			rdr_rc = ntag424_pcsc_connect(pcsc);
 		if (rdr_rc != NTAG424_READER_OK) {
 			if (params->verbose)
 				syslog(LOG_ERR, "ntag424: connect: %s",
