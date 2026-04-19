@@ -38,7 +38,7 @@ At the time of writing, I know of just one such hardware token, Yubikey
 Neo from [Yubico](http://www.yubico.com/).
 [Pcsclite](http://pcsclite.alioth.debian.org/) infrastructure (i.e.
 the library and the daemon) is used to communicate with the token over
-[CCID](http://en.wikipedia.org/wiki/Integrated_Circuit_Circuit_Interface_Device)
+[CCID](http://en.wikipedia.org/wiki/Integrated_Circuit_Card_Interface_Device)
 (i.e. PC/SC over USB) or
 [NFC](http://en.wikipedia.org/wiki/Near_field_communication). It means
 that it works equally well when you plug the token in a USB slot and if
@@ -127,7 +127,7 @@ the expected response is used to encrypt the secret again. This next
 expected response is not transferred over the air, and the shared secret
 stays in unencrypted form in the RAM (unless paged out) for a very short
 period. The downside is that if the token is used against multiple
-hosts, and the secret is leakd from one of them, all the hosts are now
+hosts, and the secret is leaked from one of them, all the hosts are now
 compromised. This is not the case with the first approach.
 
 The particular data structure is outlined in the picture:
@@ -232,7 +232,7 @@ the expected response is used to encrypt the secret again. This next
 expected response is not transferred over the air, and the shared secret
 stays in unencrypted form in the RAM (unless paged out) for a very short
 period. The downside is that if the token is used against multiple
-hosts, and the secret is leakd from one of them, all the hosts are now
+hosts, and the secret is leaked from one of them, all the hosts are now
 compromised. This is not the case with the first approach.
 
 The particular data structure is outlined in the picture:
