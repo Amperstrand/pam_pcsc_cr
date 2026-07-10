@@ -787,10 +787,6 @@ static void test_status_strings(void)
 }
 
 /* ============================================================
- * H. Card entry validation and config file writing
- * ========================================================== */
-
-/* ============================================================
  * E. [defaults] section and key resolution
  * ========================================================== */
 
@@ -1149,7 +1145,7 @@ static void test_add_card_no_keys_no_defaults_rejected(void)
 }
 
 /* ============================================================
- * I. Card entry validation and config file writing
+ * H. Card entry validation and config file writing
  * ========================================================== */
 
 static void test_validate_good_entry(void)
@@ -1198,8 +1194,8 @@ static void test_add_to_new_file(void)
 {
 	char path[64];
 	struct ntag424_card_entry e;
-	struct ntag424_policy *pol;
-	const struct ntag424_card_entry *found;
+	struct ntag424_policy *pol = NULL;
+	const struct ntag424_card_entry *found = NULL;
 
 	snprintf(path, sizeof(path), "/tmp/ntag424_policy_add_XXXXXX");
 	{
@@ -1231,6 +1227,8 @@ static void test_add_to_new_file(void)
 
 	ASSERT("add_new_cid",
 	       found && strcmp(found->card_id, "card1") == 0);
+	ASSERT("add_new_uid",
+	       found && memcmp(found->uid, e.uid, NTAG424_UID_BYTES) == 0);
 
 	ASSERT("add_new_k1",
 	       found && memcmp(found->k1, e.k1, NTAG424_KEY_BYTES) == 0);
@@ -1244,8 +1242,8 @@ static void test_add_to_new_file(void)
 static void test_add_to_existing_file(void)
 {
 	char path[64];
-	struct ntag424_policy *pol;
-	const struct ntag424_card_entry *found;
+	struct ntag424_policy *pol = NULL;
+	const struct ntag424_card_entry *found = NULL;
 	struct ntag424_card_entry e2;
 	uint8_t uid2[NTAG424_UID_BYTES];
 
@@ -1278,10 +1276,14 @@ static void test_add_to_existing_file(void)
 		ASSERT("add_existing_alice",
 		       ntag424_policy_lookup(pol, "alice", alice_uid, &found)
 		       == NTAG424_POLICY_OK);
+		ASSERT("add_existing_alice_card",
+		       found && strcmp(found->card_id, "testcard1") == 0);
 
 		ASSERT("add_existing_bob",
 		       ntag424_policy_lookup(pol, "bob", uid2, &found)
 		       == NTAG424_POLICY_OK);
+		ASSERT("add_existing_bob_card",
+		       found && strcmp(found->card_id, "card2") == 0);
 	}
 
 	ntag424_policy_free(pol);
@@ -1320,10 +1322,10 @@ static void test_add_duplicate_rejected(void)
 static void test_add_duplicate_overwrite(void)
 {
 	char path[64];
-	struct ntag424_policy *pol;
+	struct ntag424_policy *pol = NULL;
 	struct ntag424_card_entry e;
 	uint8_t uid2[NTAG424_UID_BYTES];
-	const struct ntag424_card_entry *found;
+	const struct ntag424_card_entry *found = NULL;
 
 	snprintf(path, sizeof(path), "/tmp/ntag424_policy_ow_XXXXXX");
 	{
@@ -1350,6 +1352,8 @@ static void test_add_duplicate_overwrite(void)
 	ASSERT("dup_ow_user",
 	       ntag424_policy_lookup(pol, "mallory", uid2, &found)
 	       == NTAG424_POLICY_OK);
+	ASSERT("dup_ow_uid",
+	       found && memcmp(found->uid, uid2, NTAG424_UID_BYTES) == 0);
 
 	ASSERT("dup_ow_not_alice",
 	       ntag424_policy_lookup(pol, "alice", uid2, &found)
@@ -1418,9 +1422,11 @@ static void test_add_to_malformed_file(void)
 static void test_add_preserves_existing(void)
 {
 	char path[64];
-	struct ntag424_policy *pol;
+	struct ntag424_policy *pol = NULL;
 	struct ntag424_card_entry e2;
 	const struct ntag424_card_entry *found = NULL;
+	uint8_t expected_k1[NTAG424_KEY_BYTES];
+	uint8_t expected_k2[NTAG424_KEY_BYTES];
 	uint8_t uid2[NTAG424_UID_BYTES];
 
 	snprintf(path, sizeof(path), "/tmp/ntag424_policy_pres_XXXXXX");
@@ -1438,10 +1444,14 @@ static void test_add_preserves_existing(void)
 	parse_hex("00112233445566778899aabbccddeeff", e2.k1, NTAG424_KEY_BYTES);
 	parse_hex("ffeeddccbbaa99887766554433221100", e2.k2, NTAG424_KEY_BYTES);
 	e2.has_k1_k2 = 1;
+	parse_hex(TV_K1, expected_k1, NTAG424_KEY_BYTES);
+	parse_hex(TV_K2, expected_k2, NTAG424_KEY_BYTES);
 
-	ntag424_policy_add_card(path, &e2, 0);
+	ASSERT("preserve_add_second",
+	       ntag424_policy_add_card(path, &e2, 0) == NTAG424_POLICY_OK);
 
-	ntag424_policy_load(path, &pol);
+	ASSERT("preserve_load",
+	       ntag424_policy_load(path, &pol) == NTAG424_POLICY_OK);
 	{
 		uint8_t alice_uid[NTAG424_UID_BYTES];
 		parse_hex(TV_UID, alice_uid, NTAG424_UID_BYTES);
@@ -1449,16 +1459,72 @@ static void test_add_preserves_existing(void)
 		ASSERT("preserve_alice",
 		       ntag424_policy_lookup(pol, "alice", alice_uid, &found)
 		       == NTAG424_POLICY_OK);
+		ASSERT("preserve_alice_k1",
+		       found && memcmp(found->k1, expected_k1,
+			      NTAG424_KEY_BYTES) == 0);
+		ASSERT("preserve_alice_k2",
+		       found && memcmp(found->k2, expected_k2,
+			      NTAG424_KEY_BYTES) == 0);
 	}
 
 	ntag424_policy_free(pol);
 	unlink(path);
 }
 
-static void test_add_roundtrip_hex(void)
+static void test_add_two_users(void)
 {
 	char path[64];
-	struct ntag424_policy *pol;
+	struct ntag424_policy *pol = NULL;
+	struct ntag424_card_entry alice;
+	struct ntag424_card_entry bob;
+	const struct ntag424_card_entry *found = NULL;
+	uint8_t bob_uid[NTAG424_UID_BYTES];
+
+	snprintf(path, sizeof(path), "/tmp/ntag424_policy_users_XXXXXX");
+	{
+		int fd = mkstemp(path);
+		close(fd);
+		unlink(path);
+	}
+
+	memset(&alice, 0, sizeof(alice));
+	snprintf(alice.card_id, sizeof(alice.card_id), "alice1");
+	snprintf(alice.username, sizeof(alice.username), "alice");
+	parse_hex(TV_UID, alice.uid, NTAG424_UID_BYTES);
+	parse_hex(TV_K1, alice.k1, NTAG424_KEY_BYTES);
+	parse_hex(TV_K2, alice.k2, NTAG424_KEY_BYTES);
+	alice.has_k1_k2 = 1;
+
+	memset(&bob, 0, sizeof(bob));
+	snprintf(bob.card_id, sizeof(bob.card_id), "bob1");
+	snprintf(bob.username, sizeof(bob.username), "bob");
+	parse_hex("04AABBCCDDEEFF", bob_uid, NTAG424_UID_BYTES);
+	memcpy(bob.uid, bob_uid, NTAG424_UID_BYTES);
+	parse_hex("00112233445566778899aabbccddeeff", bob.k1, NTAG424_KEY_BYTES);
+	parse_hex("ffeeddccbbaa99887766554433221100", bob.k2, NTAG424_KEY_BYTES);
+	bob.has_k1_k2 = 1;
+
+	ASSERT("two_users_add_alice",
+	       ntag424_policy_add_card(path, &alice, 0) == NTAG424_POLICY_OK);
+	ASSERT("two_users_add_bob",
+	       ntag424_policy_add_card(path, &bob, 0) == NTAG424_POLICY_OK);
+	ASSERT("two_users_load",
+	       ntag424_policy_load(path, &pol) == NTAG424_POLICY_OK);
+	ASSERT("two_users_lookup_alice",
+	       ntag424_policy_lookup(pol, "alice", alice.uid, &found)
+	       == NTAG424_POLICY_OK);
+	ASSERT("two_users_lookup_bob",
+	       ntag424_policy_lookup(pol, "bob", bob.uid, &found)
+	       == NTAG424_POLICY_OK);
+
+	ntag424_policy_free(pol);
+	unlink(path);
+}
+
+static void test_validate_roundtrip_hex(void)
+{
+	char path[64];
+	struct ntag424_policy *pol = NULL;
 	struct ntag424_card_entry e;
 	const struct ntag424_card_entry *found = NULL;
 	uint8_t expected_uid[NTAG424_UID_BYTES];
@@ -1483,10 +1549,14 @@ static void test_add_roundtrip_hex(void)
 	memcpy(e.k2, expected_k2, NTAG424_KEY_BYTES);
 	e.has_k1_k2 = 1;
 
-	ntag424_policy_add_card(path, &e, 0);
-	ntag424_policy_load(path, &pol);
+	ASSERT("roundtrip_add",
+	       ntag424_policy_add_card(path, &e, 0) == NTAG424_POLICY_OK);
+	ASSERT("roundtrip_load",
+	       ntag424_policy_load(path, &pol) == NTAG424_POLICY_OK);
 
-	ntag424_policy_lookup(pol, "carol", expected_uid, &found);
+	ASSERT("roundtrip_lookup",
+	       ntag424_policy_lookup(pol, "carol", expected_uid, &found)
+	       == NTAG424_POLICY_OK);
 
 	ASSERT("rt_uid",
 	       found && memcmp(found->uid, expected_uid,
@@ -1500,6 +1570,11 @@ static void test_add_roundtrip_hex(void)
 
 	ntag424_policy_free(pol);
 	unlink(path);
+}
+
+static void test_add_roundtrip_hex(void)
+{
+	test_validate_roundtrip_hex();
 }
 
 /* ============================================================
@@ -1887,7 +1962,7 @@ int main(void)
 	test_null_args();
 	test_status_strings();
 
-	/* E: Card entry validation and writing */
+	/* H: Card entry validation and writing */
 	test_validate_good_entry();
 	test_validate_null_entry();
 	test_validate_empty_card_id();
@@ -1901,6 +1976,8 @@ int main(void)
 	test_add_invalid_entry();
 	test_add_to_malformed_file();
 	test_add_preserves_existing();
+	test_add_two_users();
+	test_validate_roundtrip_hex();
 	test_add_roundtrip_hex();
 
 	/* J: Equivalence + derivation vectors */

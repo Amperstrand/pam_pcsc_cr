@@ -37,3 +37,12 @@ test_serial
 test_auth
 test_base64
 pam_cr_setup
+
+# compiled test binaries
+ntag424_authcheck
+ntag424_setup
+ntag424_testread
+pam_test
+test_ntag424_pam_glue
+test_ntag424_policy
+test_ntag424_reader

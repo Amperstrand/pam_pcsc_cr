@@ -16,6 +16,7 @@
 #include <ctype.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "ntag424_policy.h"
 #include "ntag424_verifier.h"
@@ -648,6 +649,82 @@ static ntag424_policy_status_t write_defaults_section(
 	return NTAG424_POLICY_OK;
 }
 
+static ntag424_policy_status_t rewrite_policy_file(
+	const char *config_path,
+	const struct ntag424_policy *policy,
+	const struct ntag424_card_entry *entry,
+	int replace_idx)
+{
+	char *tmp_path;
+	size_t path_len;
+	int fd;
+	FILE *f;
+	ntag424_policy_status_t rc;
+	size_t i;
+
+	path_len = strlen(config_path);
+	tmp_path = malloc(path_len + 12);
+	if (!tmp_path)
+		return NTAG424_POLICY_ERR_NOMEM;
+
+	snprintf(tmp_path, path_len + 12, "%s.tmp.XXXXXX", config_path);
+	fd = mkstemp(tmp_path);
+	if (fd < 0) {
+		free(tmp_path);
+		return NTAG424_POLICY_ERR_OPEN;
+	}
+
+	f = fdopen(fd, "w");
+	if (!f) {
+		close(fd);
+		unlink(tmp_path);
+		free(tmp_path);
+		return NTAG424_POLICY_ERR_OPEN;
+	}
+
+	if (policy) {
+		rc = write_defaults_section(f, policy);
+		if (rc != NTAG424_POLICY_OK)
+			goto fail;
+
+		for (i = 0; i < policy->num_cards; i++) {
+			if ((int)i == replace_idx)
+				rc = write_card_entry(f, entry);
+			else
+				rc = write_card_entry(f, &policy->cards[i]);
+			if (rc != NTAG424_POLICY_OK)
+				goto fail;
+		}
+	}
+
+	if (!policy || replace_idx < 0) {
+		rc = write_card_entry(f, entry);
+		if (rc != NTAG424_POLICY_OK)
+			goto fail;
+	}
+
+	if (fclose(f) != 0) {
+		unlink(tmp_path);
+		free(tmp_path);
+		return NTAG424_POLICY_ERR_OPEN;
+	}
+
+	if (rename(tmp_path, config_path) != 0) {
+		unlink(tmp_path);
+		free(tmp_path);
+		return NTAG424_POLICY_ERR_OPEN;
+	}
+
+	free(tmp_path);
+	return NTAG424_POLICY_OK;
+
+fail:
+	fclose(f);
+	unlink(tmp_path);
+	free(tmp_path);
+	return rc;
+}
+
 ntag424_policy_status_t ntag424_policy_add_card(
 	const char *config_path,
 	const struct ntag424_card_entry *entry,
@@ -655,44 +732,23 @@ ntag424_policy_status_t ntag424_policy_add_card(
 {
 	ntag424_policy_status_t rc;
 	struct ntag424_policy *policy = NULL;
-	FILE *f;
 	int found_idx = -1;
 	size_t i;
-	char tmp_path[512];
-	int entry_has_keys;
+
+	if (!config_path)
+		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
 
 	rc = ntag424_policy_validate_card_entry(entry);
 	if (rc != NTAG424_POLICY_OK)
 		return rc;
 
-	if (!config_path)
-		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
-
-	entry_has_keys = entry->has_k1_k2 || entry->has_issuer_key;
+	if (access(config_path, F_OK) != 0)
+		return rewrite_policy_file(config_path, NULL, entry, -1);
 
 	rc = ntag424_policy_load(config_path, &policy);
-
-	if (rc == NTAG424_POLICY_ERR_OPEN) {
-		if (!entry_has_keys)
-			return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
-
-		f = fopen(config_path, "w");
-		if (!f)
-			return NTAG424_POLICY_ERR_OPEN;
-		rc = write_card_entry(f, entry);
-		fclose(f);
-		return rc;
-	}
-
 	if (rc != NTAG424_POLICY_OK)
 		return rc;
 
-	if (!entry_has_keys && !policy->has_default_issuer_key) {
-		ntag424_policy_free(policy);
-		return NTAG424_POLICY_ERR_INVALID_ARGUMENT;
-	}
-
-	/* Check for duplicate card_id */
 	for (i = 0; i < policy->num_cards; i++) {
 		if (strcmp(policy->cards[i].card_id, entry->card_id) == 0) {
 			found_idx = (int)i;
@@ -705,56 +761,7 @@ ntag424_policy_status_t ntag424_policy_add_card(
 		return NTAG424_POLICY_ERR_PARSE;
 	}
 
-	/* Write to temp file, then rename for atomicity */
-	snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d",
-		 config_path, (int)getpid());
-
-	f = fopen(tmp_path, "w");
-	if (!f) {
-		ntag424_policy_free(policy);
-		return NTAG424_POLICY_ERR_OPEN;
-	}
-
-	/* Write [defaults] section if present */
-	rc = write_defaults_section(f, policy);
-	if (rc != NTAG424_POLICY_OK) {
-		fclose(f);
-		unlink(tmp_path);
-		ntag424_policy_free(policy);
-		return rc;
-	}
-
-	for (i = 0; i < policy->num_cards; i++) {
-		if ((int)i == found_idx) {
-			rc = write_card_entry(f, entry);
-		} else {
-			rc = write_card_entry(f, &policy->cards[i]);
-		}
-		if (rc != NTAG424_POLICY_OK) {
-			fclose(f);
-			unlink(tmp_path);
-			ntag424_policy_free(policy);
-			return rc;
-		}
-	}
-
-	if (found_idx < 0) {
-		rc = write_card_entry(f, entry);
-		if (rc != NTAG424_POLICY_OK) {
-			fclose(f);
-			unlink(tmp_path);
-			ntag424_policy_free(policy);
-			return rc;
-		}
-	}
-
-	fclose(f);
+	rc = rewrite_policy_file(config_path, policy, entry, found_idx);
 	ntag424_policy_free(policy);
-
-	if (rename(tmp_path, config_path) != 0) {
-		unlink(tmp_path);
-		return NTAG424_POLICY_ERR_OPEN;
-	}
-
-	return NTAG424_POLICY_OK;
+	return rc;
 }

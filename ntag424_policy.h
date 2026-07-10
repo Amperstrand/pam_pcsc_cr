@@ -179,9 +179,10 @@ ntag424_policy_status_t ntag424_policy_try_verify(
 
 /*
  * Validate a card entry's fields without writing anything.
- * Checks: non-empty card_id and username.
- * Returns NTAG424_POLICY_OK if valid, NTAG424_POLICY_ERR_INVALID_ARGUMENT
- * otherwise.
+ * Checks: non-empty card_id, username; UID exactly 7 bytes; K1/K2 exactly
+ * 16 bytes.
+ * Returns NTAG424_POLICY_OK if valid,
+ * NTAG424_POLICY_ERR_INVALID_ARGUMENT otherwise.
  */
 ntag424_policy_status_t ntag424_policy_validate_card_entry(
 	const struct ntag424_card_entry *entry);
@@ -193,12 +194,15 @@ ntag424_policy_status_t ntag424_policy_validate_card_entry(
  * If the file exists:
  *   - Parses it first to validate existing content (must be a valid config).
  *   - If a card with the same card_id already exists:
- *     - If overwrite != 0: rewrites the file with the updated entry.
+ *     - If overwrite != 0: replaces that card's section in-place.
  *     - If overwrite == 0: returns NTAG424_POLICY_ERR_PARSE (duplicate).
  *   - Appends the new [card:<id>] section otherwise.
  *
  * The entry is validated via ntag424_policy_validate_card_entry first.
- * UID is written as 14 lowercase hex chars; K1/K2 as 32 lowercase hex chars.
+ *
+ * IMPORTANT: This function writes the UID as 14 lowercase hex characters,
+ * and K1/K2 as 32 lowercase hex characters, matching the format that
+ * ntag424_policy_load expects to parse back.
  *
  * Returns NTAG424_POLICY_OK on success.
  */
