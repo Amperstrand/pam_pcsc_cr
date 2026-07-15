@@ -46,3 +46,5 @@ pam_test
 test_ntag424_pam_glue
 test_ntag424_policy
 test_ntag424_reader
+test_ntag424_replay
+test_ntag424_verifier
